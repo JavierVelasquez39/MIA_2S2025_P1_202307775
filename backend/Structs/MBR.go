@@ -13,5 +13,10 @@ type MBR struct {
 
 func NewMBR() MBR {
 	var mb MBR
+	// Inicializar particiones vacías
+	mb.Mbr_partition_1 = NewParticion()
+	mb.Mbr_partition_2 = NewParticion()
+	mb.Mbr_partition_3 = NewParticion()
+	mb.Mbr_partition_4 = NewParticion()
 	return mb
 }
