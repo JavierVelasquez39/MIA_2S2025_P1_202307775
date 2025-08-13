@@ -121,7 +121,8 @@ func executeCommand(command string) string {
 		return Comandos.ValidarDatosMKDISK(tokens)
 	case "RMDISK":
 		return Comandos.RMDISK(tokens)
-	// ... otros comandos existentes ...
+	case "FDISK":
+		return Comandos.ValidarDatosFDISK(tokens)
 	default:
 		return fmt.Sprintf("⚠️ Comando no reconocido: %s", cmd)
 	}
