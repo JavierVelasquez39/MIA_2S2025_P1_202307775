@@ -123,6 +123,20 @@ func executeCommand(command string) string {
 		return Comandos.RMDISK(tokens)
 	case "FDISK":
 		return Comandos.ValidarDatosFDISK(tokens)
+	case "MOUNT":
+		return Comandos.ValidarDatosMOUNT(tokens)
+	case "MOUNTED":
+		return Comandos.ValidarDatosMOUNTED(tokens)
+	case "MKFS":
+		return Comandos.ValidarDatosMKFS(tokens)
+	case "REP":
+		return Comandos.ValidarDatosREP(tokens)
+	case "CAT":
+		return Comandos.ValidarDatosCAT(tokens)
+	case "LOGIN":
+		return Comandos.ValidarDatosLOGIN(tokens)
+	case "LOGOUT":
+		return Comandos.ValidarDatosLOGOUT(tokens)
 	default:
 		return fmt.Sprintf("⚠️ Comando no reconocido: %s", cmd)
 	}

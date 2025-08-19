@@ -293,3 +293,42 @@ func FormatearTamaño(bytes int64) string {
 	}
 	return fmt.Sprintf("%.1f %cB", float64(bytes)/float64(div), "KMGTPE"[exp])
 }
+
+// ConvertirAString20 convierte [20]byte a string
+func ConvertirAString20(bytes [20]byte) string {
+	resultado := ""
+	for _, b := range bytes {
+		if b != 0 {
+			resultado += string(b)
+		} else {
+			break
+		}
+	}
+	return resultado
+}
+
+// ConvertirAString150 convierte [150]byte a string
+func ConvertirAString150(bytes [150]byte) string {
+	resultado := ""
+	for _, b := range bytes {
+		if b != 0 {
+			resultado += string(b)
+		} else {
+			break
+		}
+	}
+	return resultado
+}
+
+// ConvertirAString10 convierte [10]byte a string
+func ConvertirAString10(bytes [10]byte) string {
+	resultado := ""
+	for _, b := range bytes {
+		if b != 0 {
+			resultado += string(b)
+		} else {
+			break
+		}
+	}
+	return resultado
+}
