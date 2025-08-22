@@ -18,7 +18,7 @@ func ValidarDatosCAT(tokens []string) string {
 	}
 
 	var archivos []string
-	var idParticion string // Nuevo parámetro opcional
+	var idParticion string
 
 	// Parsear tokens para obtener múltiples archivos y partición
 	for i := 0; i < len(tokens); i++ {
@@ -90,14 +90,11 @@ func leerArchivoReal(rutaArchivo string, idParticion string) string {
 	var idFinal string
 
 	if idParticion != "" {
-		// Si se especificó un ID, usarlo
 		idFinal = idParticion
 		fmt.Printf("🔧 DEBUG: Usando ID especificado: %s\n", idFinal)
 	} else {
-		// Si no se especificó, intentar obtenerlo de la sesión activa
 		idFinal = obtenerParticionDeSesion()
 		if idFinal == "" {
-			// Si no hay sesión, buscar la primera partición montada
 			idFinal = obtenerPrimeraParticionMontada()
 			if idFinal == "" {
 				fmt.Printf("❌ CAT: No hay particiones montadas\n")
@@ -299,35 +296,48 @@ func buscarEnDirectorio(file *os.File, sb Structs.SuperBloque, inodoDir Structs.
 	return -1 // No encontrado
 }
 
-// leerContenidoArchivo lee el contenido completo de un archivo
 func leerContenidoArchivo(file *os.File, sb Structs.SuperBloque, inodo Structs.Inodos) string {
 	if inodo.I_type != 1 {
 		return "" // No es un archivo
 	}
 
-	// Leer el bloque del archivo
-	bloqueSize := int64(unsafe.Sizeof(Structs.BloquesCarpetas{}))
-	posicionBloque := sb.S_block_start + (inodo.I_block[0] * bloqueSize)
+	fmt.Printf("🔧 DEBUG: Iniciando lectura de contenido de archivo\n")
+	fmt.Printf("🔧 DEBUG: Inodo - Tipo: %d, Tamaño: %d bytes, Bloque[0]: %d\n",
+		inodo.I_type, inodo.I_size, inodo.I_block[0])
 
-	fmt.Printf("🔧 DEBUG: Leyendo contenido de archivo, bloque en posición %d\n", posicionBloque)
+	mitadBA := sb.S_block_start + int64(unsafe.Sizeof(Structs.BloquesCarpetas{}))
+	TamBA := int64(unsafe.Sizeof(Structs.BloquesArchivos{}))
+	var contenido strings.Builder
 
-	file.Seek(posicionBloque, 0)
-	var bloque Structs.BloquesArchivos
-	if err := binary.Read(file, binary.BigEndian, &bloque); err != nil {
-		fmt.Printf("❌ CAT: Error al leer bloque de archivo: %v\n", err)
-		return ""
-	}
+	for bloque := 0; bloque < 16; bloque++ {
+		if inodo.I_block[bloque] == -1 {
+			break
+		}
 
-	// Convertir contenido a string (solo hasta el tamaño real del archivo)
-	contenido := ""
-	for i := int64(0); i < inodo.I_size && i < int64(len(bloque.B_content)); i++ {
-		if bloque.B_content[i] != 0 {
-			contenido += string(bloque.B_content[i])
+		PunteroBA := mitadBA + (int64(inodo.I_block[bloque]-1) * TamBA)
+
+		fmt.Printf("🔧 DEBUG: Leyendo bloque %d en posición %d (Nº%d)\n",
+			inodo.I_block[bloque], PunteroBA, bloque)
+
+		// Leer el bloque
+		file.Seek(PunteroBA, 0)
+		var fb Structs.BloquesArchivos
+		err := binary.Read(file, binary.BigEndian, &fb)
+		if err != nil {
+			fmt.Printf("❌ CAT: Error leyendo bloque: %v\n", err)
+			continue
+		}
+
+		for i := 0; i < len(fb.B_content); i++ {
+			if fb.B_content[i] != 0 {
+				contenido.WriteByte(fb.B_content[i])
+			}
 		}
 	}
 
-	fmt.Printf("✅ DEBUG: Contenido leído (%d bytes): %q\n", len(contenido), contenido)
-	return contenido
+	resultado := contenido.String()
+	fmt.Printf("✅ DEBUG: Contenido leído (%d bytes): %q\n", len(resultado), resultado)
+	return resultado
 }
 
 // obtenerParticionDeSesion obtiene el ID de partición de la sesión activa

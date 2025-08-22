@@ -137,6 +137,14 @@ func executeCommand(command string) string {
 		return Comandos.ValidarDatosLOGIN(tokens)
 	case "LOGOUT":
 		return Comandos.ValidarDatosLOGOUT(tokens)
+	case "MKGRP":
+		return Comandos.ValidarDatosMKGRP(tokens)
+	case "RMGRP":
+		return Comandos.ValidarDatosRMGRP(tokens)
+	case "MKUSR":
+		return Comandos.ValidarDatosMKUSR(tokens)
+	case "RMUSR":
+		return Comandos.ValidarDatosRMUSR(tokens)
 	default:
 		return fmt.Sprintf("⚠️ Comando no reconocido: %s", cmd)
 	}

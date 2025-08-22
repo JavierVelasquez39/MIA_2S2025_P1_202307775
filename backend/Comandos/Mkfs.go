@@ -316,6 +316,11 @@ func crearEstructuraInicial(file *os.File, spr Structs.SuperBloque, particion St
 	spr.S_free_inodes_count -= 2 // Restamos 2 inodos (raíz + users.txt)
 	spr.S_free_blocks_count -= 2 // Restamos 2 bloques (raíz + users.txt)
 
+	// Indicar que los inodos 0 y 1 ya fueron usados y los bloques 0 y 1 también
+	// S_firts_ino y S_first_blo deben reflejar el último índice asignado
+	spr.S_firts_ino = 1
+	spr.S_first_blo = 1
+
 	// Reescribir superbloque actualizado
 	file.Seek(particion.Part_start, 0)
 	if err := binary.Write(file, binary.BigEndian, spr); err != nil {
