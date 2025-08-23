@@ -313,11 +313,11 @@ func crearEstructuraInicial(file *os.File, spr Structs.SuperBloque, particion St
 	fecha := time.Now().Format("2006-01-02 15:04:05")
 
 	// Actualizar contadores del superbloque
+	// Reservamos inodos 0 y 1 y bloques 0 y 1
 	spr.S_free_inodes_count -= 2 // Restamos 2 inodos (raíz + users.txt)
 	spr.S_free_blocks_count -= 2 // Restamos 2 bloques (raíz + users.txt)
 
-	// Indicar que los inodos 0 y 1 ya fueron usados y los bloques 0 y 1 también
-	// S_firts_ino y S_first_blo deben reflejar el último índice asignado
+	// S_firts_ino y S_first_blo deben reflejar el último índice asignado (1)
 	spr.S_firts_ino = 1
 	spr.S_first_blo = 1
 
@@ -327,7 +327,7 @@ func crearEstructuraInicial(file *os.File, spr Structs.SuperBloque, particion St
 		return err
 	}
 
-	// Marcar inodos y bloques como ocupados en los bitmaps
+	// Marcar inodos y bloques como ocupados en los bitmaps (usar '1')
 	file.Seek(spr.S_bm_inode_start, 0)
 	file.Write([]byte{'1'}) // Inodo 0 (directorio raíz)
 	file.Write([]byte{'1'}) // Inodo 1 (archivo users.txt)

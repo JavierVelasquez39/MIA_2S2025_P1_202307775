@@ -145,6 +145,8 @@ func executeCommand(command string) string {
 		return Comandos.ValidarDatosMKUSR(tokens)
 	case "RMUSR":
 		return Comandos.ValidarDatosRMUSR(tokens)
+	case "CHGRP":
+		return Comandos.ValidarDatosCHGRP(tokens)
 	default:
 		return fmt.Sprintf("⚠️ Comando no reconocido: %s", cmd)
 	}
