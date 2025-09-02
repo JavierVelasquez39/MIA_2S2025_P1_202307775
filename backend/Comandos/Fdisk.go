@@ -187,23 +187,42 @@ func FDISK(s, path, name, unit, tipo, fit string) string {
 		return Utils.Error("FDISK", "Ya existe una partición con el nombre: "+name)
 	}
 
-	// NUEVA VALIDACIÓN: Verificar restricción de partición extendida
+	// Obtener particiones actuales
 	particiones := getParticiones(*mbr)
+
+	// CASO ESPECIAL: Partición lógica
+	if Utils.Comparar(tipo, "L") {
+		// Buscar partición extendida
+		var extendida *Structs.Particion
+		for i := range particiones {
+			if particiones[i].Part_status == '1' && (particiones[i].Part_type == 'E' || particiones[i].Part_type == 'e') {
+				extendida = &particiones[i]
+				break
+			}
+		}
+
+		if extendida == nil {
+			return Utils.Error("FDISK", "No existe partición extendida para crear partición lógica")
+		}
+
+		// Verificar tamaño disponible en extendida
+		if sizeBytes > int(extendida.Part_size) {
+			return Utils.Error("FDISK", "La partición lógica es más grande que la extendida")
+		}
+
+		// Crear partición lógica en la extendida
+		return crearParticionLogica(*extendida, path, name, sizeBytes, fit)
+	}
+
+	// VALIDACIÓN: Verificar restricción de partición extendida
 	if Utils.Comparar(tipo, "E") {
 		if existeParticionExtendida(particiones) {
 			return Utils.Error("FDISK", "Solo se puede crear una partición extendida por disco. Ya existe una partición extendida.")
 		}
 	}
 
-	// NUEVA VALIDACIÓN: Para particiones lógicas, verificar que existe partición extendida
-	if Utils.Comparar(tipo, "L") {
-		if !existeParticionExtendida(particiones) {
-			return Utils.Error("FDISK", "No se puede crear una partición lógica sin una partición extendida. Cree primero una partición extendida (-type=E)")
-		}
-	}
-
-	// NUEVA VALIDACIÓN: Verificar límite de particiones primarias
-	if Utils.Comparar(tipo, "P") {
+	// VALIDACIÓN: Verificar límite de particiones primarias
+	if Utils.Comparar(tipo, "P") || Utils.Comparar(tipo, "E") {
 		numPrimarias := contarParticionesPrimarias(particiones)
 		numExtendidas := contarParticionesExtendidas(particiones)
 
@@ -249,7 +268,7 @@ func FDISK(s, path, name, unit, tipo, fit string) string {
 		return Utils.Error("FDISK", "No hay slots disponibles para más particiones")
 	}
 
-	// Escribir MBR actualizado al disco
+	// Escribir MBR
 	if err := escribirMBR(path, *mbr); err != nil {
 		return Utils.Error("FDISK", "Error al escribir MBR: "+err.Error())
 	}
@@ -264,12 +283,130 @@ func FDISK(s, path, name, unit, tipo, fit string) string {
 	}
 
 	tipoStr := "primaria"
-	if Utils.Comparar(tipo, "L") {
-		tipoStr = "lógica"
-	}
-
 	return Utils.Mensaje("FDISK", fmt.Sprintf("Partición %s '%s' creada correctamente (%s)",
 		tipoStr, name, Utils.FormatearTamaño(int64(sizeBytes))))
+}
+
+// crearParticionLogica crea una partición lógica dentro de una extendida
+func crearParticionLogica(extendida Structs.Particion, path string, name string, size int, fit string) string {
+	fmt.Printf("🔧 DEBUG: Creando partición lógica '%s' de %d bytes en partición extendida\n", name, size)
+
+	// Abrir el archivo del disco
+	file, err := os.OpenFile(path, os.O_RDWR, 0644)
+	if err != nil {
+		return Utils.Error("FDISK", "Error al abrir el disco: "+err.Error())
+	}
+	defer file.Close()
+
+	// Tamaño de un EBR
+	ebrSize := int(unsafe.Sizeof(Structs.EBR{}))
+	fmt.Printf("🔧 DEBUG: Tamaño de EBR = %d bytes\n", ebrSize)
+
+	// Verificar si hay espacio suficiente en la extendida
+	espacioRequerido := size + ebrSize
+	if espacioRequerido > int(extendida.Part_size) {
+		return Utils.Error("FDISK", "No hay espacio suficiente en la partición extendida")
+	}
+
+	// Obtener todas las particiones lógicas actuales
+	logicas := getLogicas(extendida, path)
+
+	// Verificar nombre único
+	for _, ebr := range logicas {
+		nombreEBR := string(bytes.Trim(ebr.Part_name[:], "\x00"))
+		if Utils.Comparar(nombreEBR, name) {
+			return Utils.Error("FDISK", "Ya existe una partición lógica con ese nombre")
+		}
+	}
+
+	// Posición inicial = inicio de la partición extendida
+	var lastEBR Structs.EBR
+	var newPosition int64
+
+	if len(logicas) == 0 {
+		// Primera partición lógica, va justo después del EBR inicial
+		newPosition = extendida.Part_start + int64(ebrSize)
+
+		// Leer el EBR inicial
+		file.Seek(extendida.Part_start, 0)
+		initialEBR := Structs.NewEBR()
+		if err := binary.Read(file, binary.LittleEndian, &initialEBR); err != nil {
+			return Utils.Error("FDISK", "Error al leer EBR inicial: "+err.Error())
+		}
+
+		// Actualizar el EBR inicial
+		initialEBR.Part_status = '1'
+		initialEBR.Part_fit = fit[0]
+		initialEBR.Part_start = newPosition
+		initialEBR.Part_size = int64(size)
+		initialEBR.Part_next = 0
+		copy(initialEBR.Part_name[:], name)
+
+		// Escribir el EBR actualizado
+		file.Seek(extendida.Part_start, 0)
+		if err := binary.Write(file, binary.LittleEndian, &initialEBR); err != nil {
+			return Utils.Error("FDISK", "Error al escribir EBR inicial: "+err.Error())
+		}
+
+		fmt.Printf("🔧 DEBUG: Primera partición lógica creada en posición %d\n", newPosition)
+	} else {
+		// Buscar última partición lógica
+		lastEBR = logicas[len(logicas)-1]
+		lastEBRPosition := lastEBR.Part_start + lastEBR.Part_size
+
+		// Verificar si hay suficiente espacio al final de la extendida
+		if lastEBRPosition+int64(size)+int64(ebrSize) > extendida.Part_start+extendida.Part_size {
+			return Utils.Error("FDISK", "No hay espacio suficiente después de la última partición lógica")
+		}
+
+		// Crear nuevo EBR para la partición lógica
+		newEBR := Structs.NewEBR()
+		newEBR.Part_status = '1'
+		newEBR.Part_fit = fit[0]
+		newEBR.Part_start = lastEBRPosition + int64(ebrSize)
+		newEBR.Part_size = int64(size)
+		newEBR.Part_next = 0
+		copy(newEBR.Part_name[:], name)
+
+		// Buscar el EBR anterior para actualizar su campo part_next
+		var prevEBRPos int64
+		currentPos := extendida.Part_start
+
+		for currentPos > 0 {
+			tmpEBR := Structs.EBR{}
+			file.Seek(currentPos, 0)
+			if err := binary.Read(file, binary.LittleEndian, &tmpEBR); err != nil {
+				return Utils.Error("FDISK", "Error al leer EBRs: "+err.Error())
+			}
+
+			if tmpEBR.Part_next == 0 {
+				// Este es el último EBR de la cadena
+				prevEBRPos = currentPos
+				tmpEBR.Part_next = lastEBRPosition
+
+				// Actualizar el EBR anterior
+				file.Seek(prevEBRPos, 0)
+				if err := binary.Write(file, binary.LittleEndian, &tmpEBR); err != nil {
+					return Utils.Error("FDISK", "Error al actualizar EBR anterior: "+err.Error())
+				}
+				break
+			}
+
+			currentPos = tmpEBR.Part_next
+		}
+
+		// Escribir el nuevo EBR
+		file.Seek(lastEBRPosition, 0)
+		if err := binary.Write(file, binary.LittleEndian, &newEBR); err != nil {
+			return Utils.Error("FDISK", "Error al escribir nuevo EBR: "+err.Error())
+		}
+
+		newPosition = newEBR.Part_start
+		fmt.Printf("🔧 DEBUG: Nueva partición lógica creada en posición %d\n", newPosition)
+	}
+
+	return Utils.Mensaje("FDISK", fmt.Sprintf("Partición lógica '%s' creada correctamente (%s)",
+		name, Utils.FormatearTamaño(int64(size))))
 }
 
 // NUEVAS FUNCIONES DE VALIDACIÓN
@@ -455,9 +592,9 @@ func escribirMBR(path string, mbr Structs.MBR) error {
 
 	file.Seek(0, 0)
 
-	// FIX: Usar BigEndian para mantener compatibilidad
+	// Correctly serialize the MBR to a buffer
 	var buffer bytes.Buffer
-	if err := binary.Write(&buffer, binary.BigEndian, &mbr); err != nil {
+	if err = binary.Write(&buffer, binary.LittleEndian, &mbr); err != nil {
 		return fmt.Errorf("error al serializar MBR: %v", err)
 	}
 
@@ -481,7 +618,8 @@ func crearEBRInicial(path string, start int) error {
 	ebr.Part_start = int64(start)
 
 	file.Seek(int64(start), 0)
-	return binary.Write(file, binary.BigEndian, &ebr)
+	// Change to LittleEndian to be consistent
+	return binary.Write(file, binary.LittleEndian, &ebr)
 }
 
 // Funciones auxiliares existentes (sin cambios críticos)
@@ -495,8 +633,8 @@ func leerDisco(path string) *Structs.MBR {
 
 	var mbr Structs.MBR
 	file.Seek(0, 0)
-	// FIX: Usar BigEndian para leer también
-	err = binary.Read(file, binary.BigEndian, &mbr)
+	// Change to LittleEndian to match how it was written
+	err = binary.Read(file, binary.LittleEndian, &mbr)
 	if err != nil {
 		fmt.Printf("❌ Error al leer MBR: %v\n", err)
 		return nil
@@ -516,14 +654,51 @@ func getParticiones(disco Structs.MBR) []Structs.Particion {
 func buscarParticiones(mbr Structs.MBR, name string, path string) *Structs.Particion {
 	particiones := getParticiones(mbr)
 
-	for _, particion := range particiones {
+	// 1. Buscar en particiones primarias/extendidas
+	for i, particion := range particiones {
 		if particion.Part_status == '1' {
 			nombre := Utils.ConvertirAString(particion.Part_name)
 			if Utils.Comparar(nombre, name) {
-				return &particion
+				// Devolver referencia directa a la partición en el MBR
+				switch i {
+				case 0:
+					return &mbr.Mbr_partition_1
+				case 1:
+					return &mbr.Mbr_partition_2
+				case 2:
+					return &mbr.Mbr_partition_3
+				case 3:
+					return &mbr.Mbr_partition_4
+				}
+			}
+
+			// 2. Si es extendida, buscar en particiones lógicas
+			if particion.Part_type == 'E' || particion.Part_type == 'e' {
+				fmt.Printf("🔍 DEBUG: Buscando '%s' dentro de partición extendida\n", name)
+				logicas := getLogicas(particion, path)
+
+				for _, ebr := range logicas {
+					if ebr.Part_status == '1' {
+						nombreLogica := string(bytes.Trim(ebr.Part_name[:], "\x00"))
+						if Utils.Comparar(nombreLogica, name) {
+							fmt.Printf("✅ DEBUG: Partición lógica '%s' encontrada\n", name)
+
+							// Crear partición a partir del EBR
+							logica := Structs.NewParticion()
+							logica.Part_status = ebr.Part_status
+							logica.Part_type = 'L' // Es lógica
+							logica.Part_fit = ebr.Part_fit
+							logica.Part_start = ebr.Part_start
+							logica.Part_size = ebr.Part_size
+							copy(logica.Part_name[:], ebr.Part_name[:])
+							return &logica
+						}
+					}
+				}
 			}
 		}
 	}
+
 	return nil
 }
 
@@ -721,10 +896,48 @@ func addParticion(path, name, valor, unit string) string {
 	return Utils.Mensaje("FDISK", "Funcionalidad de modificación en desarrollo")
 }
 
-func crearLogica(particion Structs.Particion, extended Structs.Particion, path string) string {
-	return Utils.Mensaje("FDISK", "Funcionalidad de particiones lógicas en desarrollo")
-}
-
+// getLogicas returns all logical partitions within an extended partition
 func getLogicas(particion Structs.Particion, path string) []Structs.EBR {
-	return []Structs.EBR{}
+	ebrs := make([]Structs.EBR, 0)
+
+	// Abrir archivo del disco
+	file, err := os.Open(path)
+	if err != nil {
+		fmt.Printf("❌ Error al abrir disco para leer EBRs: %v\n", err)
+		return ebrs
+	}
+	defer file.Close()
+
+	// Comenzar en el inicio de la partición extendida
+	currentPos := particion.Part_start
+
+	fmt.Printf("🔍 DEBUG: Buscando particiones lógicas desde posición %d\n", currentPos)
+
+	// Leer EBRs en forma de lista enlazada
+	for currentPos > 0 {
+		ebr := Structs.EBR{}
+		file.Seek(currentPos, 0)
+		err := binary.Read(file, binary.LittleEndian, &ebr)
+		if err != nil {
+			fmt.Printf("❌ Error leyendo EBR: %v\n", err)
+			break
+		}
+
+		fmt.Printf("🔧 DEBUG: Leído EBR en pos %d, status=%c, nombre=%s, next=%d\n",
+			currentPos, ebr.Part_status, string(bytes.Trim(ebr.Part_name[:], "\x00")), ebr.Part_next)
+
+		// Si esta partición está activa, añadirla a la lista
+		if ebr.Part_status == '1' {
+			ebrs = append(ebrs, ebr)
+		}
+
+		// Avanzar al siguiente EBR, si existe
+		if ebr.Part_next <= 0 {
+			break
+		}
+		currentPos = ebr.Part_next
+	}
+
+	fmt.Printf("🔍 DEBUG: Encontradas %d particiones lógicas\n", len(ebrs))
+	return ebrs
 }

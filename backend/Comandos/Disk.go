@@ -63,6 +63,7 @@ func ValidarDatosMKDISK(tokens []string) string {
 }
 
 // MKDISK crea un nuevo disco
+
 func MKDISK(s, f, u, path string) string {
 	// Validar que la extensión sea .mia
 	if !strings.HasSuffix(strings.ToLower(path), ".mia") {
@@ -92,11 +93,9 @@ func MKDISK(s, f, u, path string) string {
 		return Utils.Error("MKDISK", "No se pudieron crear los directorios: "+err.Error())
 	}
 
-	// Si el archivo existe, eliminarlo
+	// Verificar si el archivo ya existe
 	if Utils.ArchivoExiste(path) {
-		if err := os.Remove(path); err != nil {
-			return Utils.Error("MKDISK", "No se pudo eliminar el archivo existente: "+err.Error())
-		}
+		return Utils.Error("MKDISK", fmt.Sprintf("Ya existe un disco con la ruta: %s\nUtilice RMDISK para eliminarlo primero", path))
 	}
 
 	// Crear archivo

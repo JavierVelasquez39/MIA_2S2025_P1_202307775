@@ -131,7 +131,7 @@ func formatearEXT2(particion Structs.Particion, path, tipo string) string {
 
 	// Escribir SuperBloque
 	file.Seek(particion.Part_start, 0)
-	if err := binary.Write(file, binary.BigEndian, spr); err != nil {
+	if err := binary.Write(file, binary.LittleEndian, spr); err != nil {
 		return Utils.Error("MKFS", "Error al escribir el superbloque")
 	}
 
@@ -151,7 +151,7 @@ func formatearEXT2(particion Structs.Particion, path, tipo string) string {
 	inodoVacio := Structs.NewInodos()
 	file.Seek(spr.S_inode_start, 0)
 	for i := 0; i < int(numInodos); i++ {
-		if err := binary.Write(file, binary.BigEndian, inodoVacio); err != nil {
+		if err := binary.Write(file, binary.LittleEndian, inodoVacio); err != nil {
 			return Utils.Error("MKFS", "Error al escribir inodos")
 		}
 	}
@@ -160,7 +160,7 @@ func formatearEXT2(particion Structs.Particion, path, tipo string) string {
 	bloqueVacio := Structs.NewBloquesCarpetas()
 	file.Seek(spr.S_block_start, 0)
 	for i := 0; i < int(numInodos); i++ { // Solo n bloques de carpetas
-		if err := binary.Write(file, binary.BigEndian, bloqueVacio); err != nil {
+		if err := binary.Write(file, binary.LittleEndian, bloqueVacio); err != nil {
 			return Utils.Error("MKFS", "Error al escribir bloques")
 		}
 	}
@@ -221,7 +221,7 @@ func verificarEstructuras(file *os.File, spr Structs.SuperBloque, particion Stru
 		// 1. Verificar SuperBloque
 		file.Seek(particion.Part_start, 0)
 		var sprLeido Structs.SuperBloque
-		if err := binary.Read(file, binary.BigEndian, &sprLeido); err != nil {
+		if err := binary.Read(file, binary.LittleEndian, &sprLeido); err != nil {
 			fmt.Printf("❌ Error leyendo superbloque: %v\n", err)
 		} else {
 			fmt.Printf("✅ SuperBloque leído correctamente:\n")
@@ -247,7 +247,7 @@ func verificarEstructuras(file *os.File, spr Structs.SuperBloque, particion Stru
 		// 4. Verificar inodo raíz
 		file.Seek(spr.S_inode_start, 0)
 		var inodoRaiz Structs.Inodos
-		if err := binary.Read(file, binary.BigEndian, &inodoRaiz); err != nil {
+		if err := binary.Read(file, binary.LittleEndian, &inodoRaiz); err != nil {
 			fmt.Printf("❌ Error leyendo inodo raíz: %v\n", err)
 		} else {
 			fmt.Printf("✅ Inodo raíz leído:\n")
@@ -258,7 +258,7 @@ func verificarEstructuras(file *os.File, spr Structs.SuperBloque, particion Stru
 
 		// 5. Verificar inodo users.txt
 		var inodoUsers Structs.Inodos
-		if err := binary.Read(file, binary.BigEndian, &inodoUsers); err != nil {
+		if err := binary.Read(file, binary.LittleEndian, &inodoUsers); err != nil {
 			fmt.Printf("❌ Error leyendo inodo users.txt: %v\n", err)
 		} else {
 			fmt.Printf("✅ Inodo users.txt leído:\n")
@@ -270,7 +270,7 @@ func verificarEstructuras(file *os.File, spr Structs.SuperBloque, particion Stru
 		// 6. Verificar contenido del bloque del directorio raíz
 		file.Seek(spr.S_block_start, 0)
 		var bloqueRaiz Structs.BloquesCarpetas
-		if err := binary.Read(file, binary.BigEndian, &bloqueRaiz); err != nil {
+		if err := binary.Read(file, binary.LittleEndian, &bloqueRaiz); err != nil {
 			fmt.Printf("❌ Error leyendo bloque directorio raíz: %v\n", err)
 		} else {
 			nombre2 := ""
@@ -288,7 +288,7 @@ func verificarEstructuras(file *os.File, spr Structs.SuperBloque, particion Stru
 		// 7. Verificar contenido del archivo users.txt
 		file.Seek(posicionBloque1, 0)
 		var bloqueUsers Structs.BloquesArchivos
-		if err := binary.Read(file, binary.BigEndian, &bloqueUsers); err != nil {
+		if err := binary.Read(file, binary.LittleEndian, &bloqueUsers); err != nil {
 			fmt.Printf("❌ Error leyendo bloque users.txt: %v\n", err)
 		} else {
 			contenido := ""
@@ -323,7 +323,7 @@ func crearEstructuraInicial(file *os.File, spr Structs.SuperBloque, particion St
 
 	// Reescribir superbloque actualizado
 	file.Seek(particion.Part_start, 0)
-	if err := binary.Write(file, binary.BigEndian, spr); err != nil {
+	if err := binary.Write(file, binary.LittleEndian, spr); err != nil {
 		return err
 	}
 
@@ -366,10 +366,10 @@ func crearEstructuraInicial(file *os.File, spr Structs.SuperBloque, particion St
 
 	// Escribir inodos
 	file.Seek(spr.S_inode_start, 0)
-	if err := binary.Write(file, binary.BigEndian, inodoRaiz); err != nil {
+	if err := binary.Write(file, binary.LittleEndian, inodoRaiz); err != nil {
 		return err
 	}
-	if err := binary.Write(file, binary.BigEndian, inodoUsers); err != nil {
+	if err := binary.Write(file, binary.LittleEndian, inodoUsers); err != nil {
 		return err
 	}
 
@@ -388,7 +388,7 @@ func crearEstructuraInicial(file *os.File, spr Structs.SuperBloque, particion St
 
 	// Escribir bloque del directorio raíz (posición exacta del bloque 0)
 	file.Seek(spr.S_block_start, 0)
-	if err := binary.Write(file, binary.BigEndian, bloqueRaiz); err != nil {
+	if err := binary.Write(file, binary.LittleEndian, bloqueRaiz); err != nil {
 		return err
 	}
 
@@ -397,7 +397,7 @@ func crearEstructuraInicial(file *os.File, spr Structs.SuperBloque, particion St
 	posicionBloque1 := spr.S_block_start + tamañoBloque
 
 	file.Seek(posicionBloque1, 0)
-	if err := binary.Write(file, binary.BigEndian, bloqueUsers); err != nil {
+	if err := binary.Write(file, binary.LittleEndian, bloqueUsers); err != nil {
 		return err
 	}
 
