@@ -156,12 +156,21 @@ func formatearEXT2(particion Structs.Particion, path, tipo string) string {
 		}
 	}
 
-	// Inicializar bloques vacíos
-	bloqueVacio := Structs.NewBloquesCarpetas()
+	// CORRECCIÓN: Inicializar TODOS los bloques vacíos (numBloques en lugar de numInodos)
 	file.Seek(spr.S_block_start, 0)
-	for i := 0; i < int(numInodos); i++ { // Solo n bloques de carpetas
-		if err := binary.Write(file, binary.LittleEndian, bloqueVacio); err != nil {
-			return Utils.Error("MKFS", "Error al escribir bloques")
+	for i := 0; i < int(numBloques); i++ {
+		// Los primeros bloques podrían ser carpetas o archivos
+		if i < int(numInodos) {
+			bloqueVacio := Structs.NewBloquesCarpetas()
+			if err := binary.Write(file, binary.LittleEndian, bloqueVacio); err != nil {
+				return Utils.Error("MKFS", "Error al escribir bloques de carpetas/archivos")
+			}
+		} else {
+			// El resto serían bloques de apuntadores
+			bloqueApuntadoresVacio := Structs.NewBloquesApuntadores()
+			if err := binary.Write(file, binary.LittleEndian, bloqueApuntadoresVacio); err != nil {
+				return Utils.Error("MKFS", "Error al escribir bloques de apuntadores")
+			}
 		}
 	}
 
@@ -342,8 +351,9 @@ func crearEstructuraInicial(file *os.File, spr Structs.SuperBloque, particion St
 
 	// Crear inodo del directorio raíz
 	inodoRaiz := Structs.NewInodos()
-	inodoRaiz.I_uid = 0
-	inodoRaiz.I_gid = 0
+	// CORRECCIÓN: Cambiar el UID y GID a 1 (usuario root, grupo root)
+	inodoRaiz.I_uid = 1 // Cambiado de 0 a 1 para usuario root
+	inodoRaiz.I_gid = 1 // Cambiado de 0 a 1 para grupo root
 	inodoRaiz.I_size = int64(unsafe.Sizeof(Structs.BloquesCarpetas{}))
 	copy(inodoRaiz.I_atime[:], fecha)
 	copy(inodoRaiz.I_ctime[:], fecha)
@@ -354,8 +364,9 @@ func crearEstructuraInicial(file *os.File, spr Structs.SuperBloque, particion St
 
 	// Crear inodo del archivo users.txt
 	inodoUsers := Structs.NewInodos()
-	inodoUsers.I_uid = 0
-	inodoUsers.I_gid = 0
+	// CORRECCIÓN: Cambiar el UID y GID a 1 (usuario root, grupo root)
+	inodoUsers.I_uid = 1 // Cambiado de 0 a 1 para usuario root
+	inodoUsers.I_gid = 1 // Cambiado de 0 a 1 para grupo root
 	inodoUsers.I_size = int64(len(inodoUsersData))
 	copy(inodoUsers.I_atime[:], fecha)
 	copy(inodoUsers.I_ctime[:], fecha)

@@ -117,7 +117,7 @@ func mkdir(path string, crearPadres bool) string {
 		return Utils.Error("MKDIR", "Error al leer superbloque: "+err.Error())
 	}
 	bufSuper.Write(tmp)
-	if err := binary.Read(&bufSuper, binary.BigEndian, &super); err != nil {
+	if err := binary.Read(&bufSuper, binary.LittleEndian, &super); err != nil {
 		return Utils.Error("MKDIR", "Error al decodificar superbloque: "+err.Error())
 	}
 
@@ -143,7 +143,7 @@ func mkdir(path string, crearPadres bool) string {
 	if _, err := file.Read(dataInodo); err != nil {
 		return Utils.Error("MKDIR", "Error al leer inodo raíz: "+err.Error())
 	}
-	if err := binary.Read(bytes.NewBuffer(dataInodo), binary.BigEndian, &inode); err != nil {
+	if err := binary.Read(bytes.NewBuffer(dataInodo), binary.LittleEndian, &inode); err != nil {
 		return Utils.Error("MKDIR", "Error al decodificar inodo raíz: "+err.Error())
 	}
 
@@ -171,7 +171,7 @@ func mkdir(path string, crearPadres bool) string {
 			if _, err := file.Read(tmpb); err != nil {
 				return Utils.Error("MKDIR", "Error al leer bloque de carpetas: "+err.Error())
 			}
-			if err := binary.Read(bytes.NewBuffer(tmpb), binary.BigEndian, &bc); err != nil {
+			if err := binary.Read(bytes.NewBuffer(tmpb), binary.LittleEndian, &bc); err != nil {
 				return Utils.Error("MKDIR", "Error al decodificar bloque de carpetas: "+err.Error())
 			}
 
@@ -189,7 +189,7 @@ func mkdir(path string, crearPadres bool) string {
 						return Utils.Error("MKDIR", "Error al leer inodo destino: "+err.Error())
 					}
 					var iTmp Structs.Inodos
-					if err := binary.Read(bytes.NewBuffer(dataIn), binary.BigEndian, &iTmp); err != nil {
+					if err := binary.Read(bytes.NewBuffer(dataIn), binary.LittleEndian, &iTmp); err != nil {
 						return Utils.Error("MKDIR", "Error al decodificar inodo destino: "+err.Error())
 					}
 					currentInode = iTmp
@@ -239,7 +239,7 @@ func mkdir(path string, crearPadres bool) string {
 					posNewBlock := blockStart + int64(tamBloque)*nBloque
 					file.Seek(posNewBlock, 0)
 					var bufNb bytes.Buffer
-					if err := binary.Write(&bufNb, binary.BigEndian, &newBlock); err != nil {
+					if err := binary.Write(&bufNb, binary.LittleEndian, &newBlock); err != nil {
 						return Utils.Error("MKDIR", "Error al serializar nuevo bloque: "+err.Error())
 					}
 					if _, err := file.Write(bufNb.Bytes()); err != nil {
@@ -249,7 +249,7 @@ func mkdir(path string, crearPadres bool) string {
 					// persistir inodo padre actualizado (I_block modificado)
 					file.Seek(currentInodeOffset, 0)
 					var bufPad bytes.Buffer
-					if err := binary.Write(&bufPad, binary.BigEndian, &currentInode); err != nil {
+					if err := binary.Write(&bufPad, binary.LittleEndian, &currentInode); err != nil {
 						return Utils.Error("MKDIR", "Error al serializar inodo padre: "+err.Error())
 					}
 					if _, err := file.Write(bufPad.Bytes()); err != nil {
@@ -259,7 +259,7 @@ func mkdir(path string, crearPadres bool) string {
 					// actualizar superbloque en disco tras asignación de bloque
 					file.Seek(particion.Part_start, 0)
 					var bufS1 bytes.Buffer
-					if err := binary.Write(&bufS1, binary.BigEndian, &super); err != nil {
+					if err := binary.Write(&bufS1, binary.LittleEndian, &super); err != nil {
 						return Utils.Error("MKDIR", "Error al serializar superbloque: "+err.Error())
 					}
 					if _, err := file.Write(bufS1.Bytes()); err != nil {
@@ -279,7 +279,7 @@ func mkdir(path string, crearPadres bool) string {
 				if _, err := file.Read(tmpb2); err != nil {
 					return Utils.Error("MKDIR", "Error al leer bloque para inserción: "+err.Error())
 				}
-				if err := binary.Read(bytes.NewBuffer(tmpb2), binary.BigEndian, &bc2); err != nil {
+				if err := binary.Read(bytes.NewBuffer(tmpb2), binary.LittleEndian, &bc2); err != nil {
 					return Utils.Error("MKDIR", "Error al decodificar bloque para inserción: "+err.Error())
 				}
 
@@ -312,7 +312,7 @@ func mkdir(path string, crearPadres bool) string {
 						posNewInodo := inodoStart + int64(tamInodo)*nInodo
 						file.Seek(posNewInodo, 0)
 						var bufNi bytes.Buffer
-						if err := binary.Write(&bufNi, binary.BigEndian, &newInodo); err != nil {
+						if err := binary.Write(&bufNi, binary.LittleEndian, &newInodo); err != nil {
 							return Utils.Error("MKDIR", "Error al serializar nuevo inodo: "+err.Error())
 						}
 						if _, err := file.Write(bufNi.Bytes()); err != nil {
@@ -337,7 +337,7 @@ func mkdir(path string, crearPadres bool) string {
 						posBloqueNew := blockStart + int64(tamBloque)*nBloque2
 						file.Seek(posBloqueNew, 0)
 						var bufBn bytes.Buffer
-						if err := binary.Write(&bufBn, binary.BigEndian, &newBlock); err != nil {
+						if err := binary.Write(&bufBn, binary.LittleEndian, &newBlock); err != nil {
 							return Utils.Error("MKDIR", "Error al serializar bloque nuevo: "+err.Error())
 						}
 						if _, err := file.Write(bufBn.Bytes()); err != nil {
@@ -350,7 +350,7 @@ func mkdir(path string, crearPadres bool) string {
 						// escribir el bloque padre actualizado
 						file.Seek(posBloque2, 0)
 						var bufBp bytes.Buffer
-						if err := binary.Write(&bufBp, binary.BigEndian, &bc2); err != nil {
+						if err := binary.Write(&bufBp, binary.LittleEndian, &bc2); err != nil {
 							return Utils.Error("MKDIR", "Error al serializar bloque padre: "+err.Error())
 						}
 						if _, err := file.Write(bufBp.Bytes()); err != nil {
@@ -360,7 +360,7 @@ func mkdir(path string, crearPadres bool) string {
 						// escribir superbloque actualizado (contadores)
 						file.Seek(particion.Part_start, 0)
 						var bufS bytes.Buffer
-						if err := binary.Write(&bufS, binary.BigEndian, &super); err != nil {
+						if err := binary.Write(&bufS, binary.LittleEndian, &super); err != nil {
 							return Utils.Error("MKDIR", "Error al serializar superbloque: "+err.Error())
 						}
 						if _, err := file.Write(bufS.Bytes()); err != nil {
@@ -382,7 +382,7 @@ func mkdir(path string, crearPadres bool) string {
 			dtmp := make([]byte, tamInodo)
 			if _, err := file.Read(dtmp); err == nil {
 				var itmp Structs.Inodos
-				_ = binary.Read(bytes.NewBuffer(dtmp), binary.BigEndian, &itmp)
+				_ = binary.Read(bytes.NewBuffer(dtmp), binary.LittleEndian, &itmp)
 				currentInode = itmp
 			}
 		}

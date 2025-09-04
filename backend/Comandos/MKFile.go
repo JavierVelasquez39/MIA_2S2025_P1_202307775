@@ -1,18 +1,25 @@
 package Comandos
 
 import (
-	"bytes"
 	"encoding/binary"
 	"fmt"
 	"os"
 	"strings"
+	"time"
 	"unsafe"
 
 	"godisk-backend/Structs"
 	"godisk-backend/Utils"
 )
 
-// ValidarDatosMKFILE valida parámetros y llama a mkfile
+const (
+	MAX_DIRECT_BLOCKS = 12
+	BLOCK_SIZE        = 64
+	FILE_TYPE         = 1
+	DIR_TYPE          = 0
+	DEFAULT_PERM      = 664
+)
+
 func ValidarDatosMKFILE(tokens []string) string {
 	fmt.Printf("🔧 DEBUG: ValidarDatosMKFILE tokens=%v\n", tokens)
 
@@ -25,6 +32,7 @@ func ValidarDatosMKFILE(tokens []string) string {
 	var size int64 = 0
 	var cont string
 
+	// Parsear tokens
 	for i := 0; i < len(tokens); i++ {
 		tok := strings.TrimSpace(tokens[i])
 		if tok == "" {
@@ -39,30 +47,21 @@ func ValidarDatosMKFILE(tokens []string) string {
 		if strings.HasPrefix(lower, "size=") {
 			parts := strings.SplitN(tok, "=", 2)
 			if len(parts) == 2 {
-				var s int64
-				fmt.Sscanf(parts[1], "%d", &s)
-				size = s
+				fmt.Sscanf(parts[1], "%d", &size)
 			}
 			continue
 		}
 		if strings.Contains(lower, "cont=") || strings.Contains(lower, "content=") {
 			parts := strings.SplitN(tok, "=", 2)
 			if len(parts) == 2 {
-				cont = strings.ReplaceAll(parts[1], "\"", "")
+				cont = strings.Trim(parts[1], "\"")
 			}
 			continue
 		}
 		if strings.Contains(lower, "path=") {
 			parts := strings.SplitN(tok, "=", 2)
 			if len(parts) == 2 {
-				path = strings.ReplaceAll(parts[1], "\"", "")
-			}
-			continue
-		}
-		if lower == "path" || lower == "-path" {
-			if i+1 < len(tokens) {
-				path = strings.ReplaceAll(strings.TrimSpace(tokens[i+1]), "\"", "")
-				i++
+				path = strings.Trim(parts[1], "\"")
 			}
 			continue
 		}
@@ -81,10 +80,10 @@ func ValidarDatosMKFILE(tokens []string) string {
 	return mkfile(path, crearPadres, size, cont)
 }
 
-// mkfile crea el archivo en la partición montada
 func mkfile(path string, crearPadres bool, size int64, cont string) string {
 	fmt.Printf("🔧 DEBUG: MKFILE path='%s' -r=%t size=%d cont='%s'\n", path, crearPadres, size, cont)
 
+	// Obtener partición montada
 	sesion := ObtenerSesionActiva()
 	var pathDisco string
 	particion := GetMount("MKFILE", sesion.Id, &pathDisco)
@@ -92,8 +91,8 @@ func mkfile(path string, crearPadres bool, size int64, cont string) string {
 		return Utils.Error("MKFILE", "No se encontró la partición montada con el ID: "+sesion.Id)
 	}
 
-	filePath := strings.ReplaceAll(pathDisco, "\"", "")
-	file, err := os.OpenFile(filePath, os.O_RDWR, 0644)
+	// Abrir archivo del disco
+	file, err := os.OpenFile(pathDisco, os.O_RDWR, 0644)
 	if err != nil {
 		return Utils.Error("MKFILE", "No se pudo abrir el disco: "+err.Error())
 	}
@@ -102,334 +101,336 @@ func mkfile(path string, crearPadres bool, size int64, cont string) string {
 	// Leer superbloque
 	super := Structs.NewSuperBloque()
 	file.Seek(particion.Part_start, 0)
-	readSize := int(unsafe.Sizeof(Structs.SuperBloque{}))
-	tmp := make([]byte, readSize)
-	if _, err := file.Read(tmp); err != nil {
+	if err := binary.Read(file, binary.LittleEndian, &super); err != nil {
 		return Utils.Error("MKFILE", "Error al leer superbloque: "+err.Error())
 	}
-	if err := binary.Read(bytes.NewBuffer(tmp), binary.BigEndian, &super); err != nil {
-		return Utils.Error("MKFILE", "Error al decodificar superbloque: "+err.Error())
+
+	// Calcular tamaños
+	tamInodo := int64(unsafe.Sizeof(Structs.Inodos{}))
+	tamBloqueArch := int64(unsafe.Sizeof(Structs.BloquesArchivos{}))
+	tamBloqueCarp := int64(unsafe.Sizeof(Structs.BloquesCarpetas{}))
+
+	// Preparar y validar ruta
+	path = strings.TrimSpace(path)
+	if !strings.HasPrefix(path, "/") {
+		return Utils.Error("MKFILE", "La ruta debe ser absoluta (comenzar con /)")
 	}
 
-	// tamaños y offsets
-	tamInodo := int(unsafe.Sizeof(Structs.Inodos{}))
-	tamBloqueArch := int(unsafe.Sizeof(Structs.BloquesArchivos{}))
-	tamBloqueCarp := int(unsafe.Sizeof(Structs.BloquesCarpetas{}))
-	inodoStart := super.S_inode_start
-	blockStart := super.S_block_start
-	bmInodosStart := super.S_bm_inode_start
-	bmBloquesStart := super.S_bm_block_start
-
-	trimmed := strings.TrimSpace(path)
-	if trimmed == "" || !strings.HasPrefix(trimmed, "/") {
+	// Separar componentes de la ruta
+	components := strings.Split(path, "/")
+	var cleanComponents []string
+	for _, comp := range components {
+		if comp != "" {
+			cleanComponents = append(cleanComponents, comp)
+		}
+	}
+	if len(cleanComponents) == 0 {
 		return Utils.Error("MKFILE", "Ruta inválida")
 	}
-	parts := strings.Split(trimmed, "/")[1:]
-	if len(parts) == 0 {
-		return Utils.Error("MKFILE", "Ruta inválida")
-	}
-	filename := parts[len(parts)-1]
-	parentComponents := parts[:len(parts)-1]
-	parentPath := "/"
-	if len(parentComponents) > 0 {
-		parentPath = "/" + strings.Join(parentComponents, "/")
-	}
 
-	// Asegurar existencia del padre (usar mkdir si hace falta)
-	if parentPath != "/" {
-		res := mkdir(parentPath, crearPadres)
-		if strings.Contains(res, "ERROR") || strings.Contains(res, "❌") {
-			if !crearPadres {
-				return Utils.Error("MKFILE", "No existe el directorio padre: "+parentPath)
+	fileName := cleanComponents[len(cleanComponents)-1]
+	parentComponents := cleanComponents[:len(cleanComponents)-1]
+
+	fmt.Printf("🔧 DEBUG: Ruta procesada - Directorio: %v, Archivo: %s\n",
+		parentComponents, fileName)
+
+	// Preparar contenido
+	var contentBytes []byte
+	if cont != "" {
+		contentBytes, err = os.ReadFile(cont)
+		if err != nil {
+			return Utils.Error("MKFILE", "Error leyendo archivo de contenido: "+err.Error())
+		}
+	}
+	if size > 0 {
+		if int64(len(contentBytes)) > size {
+			contentBytes = contentBytes[:size]
+		} else {
+			for int64(len(contentBytes)) < size {
+				contentBytes = append(contentBytes, '0')
 			}
 		}
 	}
 
-	// Leer inodo raíz y recorrer hasta el inodo padre
-	var inode Structs.Inodos
-	file.Seek(inodoStart, 0)
-	dataInodo := make([]byte, tamInodo)
-	if _, err := file.Read(dataInodo); err != nil {
-		return Utils.Error("MKFILE", "Error al leer inodo raíz: "+err.Error())
+	// Verificar espacio disponible
+	requiredBlocks := (int64(len(contentBytes)) + BLOCK_SIZE - 1) / BLOCK_SIZE
+	if requiredBlocks > MAX_DIRECT_BLOCKS {
+		return Utils.Error("MKFILE", "Archivo demasiado grande para bloques directos")
 	}
-	if err := binary.Read(bytes.NewBuffer(dataInodo), binary.BigEndian, &inode); err != nil {
-		return Utils.Error("MKFILE", "Error al decodificar inodo raíz: "+err.Error())
+	if super.S_free_blocks_count < requiredBlocks || super.S_free_inodes_count < 1 {
+		return Utils.Error("MKFILE", "No hay espacio suficiente")
 	}
 
-	currentInode := inode
-	currentInodeOffset := inodoStart
+	// Comenzar desde el inodo raíz
+	var currentInode Structs.Inodos
+	currentInodePos := super.S_inode_start
 
-	if parentPath != "/" {
-		comps := strings.Split(strings.Trim(parentPath, "/"), "/")
-		for _, comp := range comps {
-			if comp == "" {
+	// Leer inodo raíz
+	file.Seek(currentInodePos, 0)
+	if err := binary.Read(file, binary.LittleEndian, &currentInode); err != nil {
+		return Utils.Error("MKFILE", "Error leyendo inodo raíz")
+	}
+
+	// Navegar la ruta del directorio padre
+	for _, component := range parentComponents {
+		found := false
+
+		// Buscar en bloques directos del directorio actual
+		for i := 0; i < MAX_DIRECT_BLOCKS && !found; i++ {
+			if currentInode.I_block[i] == -1 {
 				continue
 			}
-			found := false
-			for b := 0; b < len(currentInode.I_block); b++ {
-				blk := currentInode.I_block[b]
-				if blk == int64(-1) {
-					continue
-				}
-				posBloque := blockStart + int64(tamBloqueCarp)*blk
-				var bc Structs.BloquesCarpetas
-				file.Seek(posBloque, 0)
-				tmpb := make([]byte, tamBloqueCarp)
-				if _, err := file.Read(tmpb); err != nil {
-					return Utils.Error("MKFILE", "Error al leer bloque de carpetas: "+err.Error())
-				}
-				if err := binary.Read(bytes.NewBuffer(tmpb), binary.BigEndian, &bc); err != nil {
-					return Utils.Error("MKFILE", "Error al decodificar bloque de carpetas: "+err.Error())
-				}
-				for e := 0; e < len(bc.B_content); e++ {
-					name := strings.Trim(string(bc.B_content[e].B_name[:]), "\x00")
-					if name == comp && bc.B_content[e].B_inodo != int64(-1) {
-						inodoIdx := bc.B_content[e].B_inodo
-						posInodo := inodoStart + int64(tamInodo)*inodoIdx
-						file.Seek(posInodo, 0)
-						dataIn := make([]byte, tamInodo)
-						if _, err := file.Read(dataIn); err != nil {
-							return Utils.Error("MKFILE", "Error al leer inodo destino: "+err.Error())
-						}
-						var iTmp Structs.Inodos
-						if err := binary.Read(bytes.NewBuffer(dataIn), binary.BigEndian, &iTmp); err != nil {
-							return Utils.Error("MKFILE", "Error al decodificar inodo destino: "+err.Error())
-						}
-						currentInode = iTmp
-						currentInodeOffset = posInodo
-						found = true
-						break
+
+			var dirBlock Structs.BloquesCarpetas
+			blockPos := super.S_block_start + (currentInode.I_block[i] * tamBloqueCarp)
+
+			file.Seek(blockPos, 0)
+			if err := binary.Read(file, binary.LittleEndian, &dirBlock); err != nil {
+				continue
+			}
+
+			// Buscar el componente en las entradas
+			for _, entry := range dirBlock.B_content {
+				name := strings.Trim(string(entry.B_name[:]), "\x00")
+				if name == component {
+					// Verificar que sea un directorio
+					var nextInode Structs.Inodos
+					nextInodePos := super.S_inode_start + (entry.B_inodo * tamInodo)
+
+					file.Seek(nextInodePos, 0)
+					if err := binary.Read(file, binary.LittleEndian, &nextInode); err != nil {
+						return Utils.Error("MKFILE", "Error leyendo inodo del directorio")
 					}
-				}
-				if found {
+
+					if nextInode.I_type != DIR_TYPE {
+						return Utils.Error("MKFILE", fmt.Sprintf("'%s' no es un directorio", component))
+					}
+
+					currentInode = nextInode
+					currentInodePos = nextInodePos
+					found = true
 					break
 				}
 			}
-			if !found {
-				return Utils.Error("MKFILE", "No existe el directorio padre: "+parentPath)
+		}
+
+		if !found {
+			if !crearPadres {
+				return Utils.Error("MKFILE", fmt.Sprintf("No existe el directorio '%s'", component))
+			}
+			// Crear directorio padre si está permitido
+			newDirInode, newDirPos, err := crearDirectorio(&super, file, component, sesion.Uid, sesion.Gid)
+			if err != nil {
+				return Utils.Error("MKFILE", fmt.Sprintf("Error creando directorio '%s': %v", component, err))
+			}
+			currentInode = newDirInode
+			currentInodePos = newDirPos
+		}
+	}
+
+	// Verificar si el archivo ya existe
+	for i := 0; i < MAX_DIRECT_BLOCKS; i++ {
+		if currentInode.I_block[i] == -1 {
+			continue
+		}
+
+		var dirBlock Structs.BloquesCarpetas
+		blockPos := super.S_block_start + (currentInode.I_block[i] * tamBloqueCarp)
+
+		file.Seek(blockPos, 0)
+		if err := binary.Read(file, binary.LittleEndian, &dirBlock); err != nil {
+			continue
+		}
+
+		for _, entry := range dirBlock.B_content {
+			name := strings.Trim(string(entry.B_name[:]), "\x00")
+			if name == fileName {
+				return Utils.Error("MKFILE", fmt.Sprintf("El archivo '%s' ya existe", fileName))
 			}
 		}
 	}
 
-	// Buscar entrada libre en bloque padre o asignar bloque
-	placed := false
-	var parentBloquePos int64
-	var parentBlock Structs.BloquesCarpetas
-	for b := 0; b < len(currentInode.I_block) && !placed; b++ {
-		blk := currentInode.I_block[b]
-		if blk == int64(-1) {
-			// asignar nuevo bloque al padre
-			super.S_first_blo++
-			nBloque := super.S_first_blo
-			currentInode.I_block[b] = nBloque
-			// marcar bitmap block
-			file.Seek(bmBloquesStart+int64(nBloque), 0)
-			file.Write([]byte{'1'})
+	// Crear nuevo inodo para el archivo
+	newInode := Structs.NewInodos()
+	for i := range newInode.I_block {
+		newInode.I_block[i] = -1
+	}
 
-			var newBlock Structs.BloquesCarpetas
-			for i := 0; i < len(newBlock.B_content); i++ {
-				newBlock.B_content[i].B_inodo = int64(-1)
-				for j := 0; j < len(newBlock.B_content[i].B_name); j++ {
-					newBlock.B_content[i].B_name[j] = 0
-				}
-			}
-			copy(newBlock.B_content[0].B_name[:], ".")
-			newBlock.B_content[0].B_inodo = int64((currentInodeOffset - inodoStart) / int64(tamInodo))
-			copy(newBlock.B_content[1].B_name[:], "..")
-			newBlock.B_content[1].B_inodo = int64((currentInodeOffset - inodoStart) / int64(tamInodo))
+	newInode.I_uid = int64(sesion.Uid)
+	newInode.I_gid = int64(sesion.Gid)
+	newInode.I_size = int64(len(contentBytes))
+	newInode.I_type = FILE_TYPE
+	newInode.I_perm = DEFAULT_PERM
 
-			posNewBlock := blockStart + int64(tamBloqueCarp)*nBloque
-			file.Seek(posNewBlock, 0)
-			var bufNb bytes.Buffer
-			if err := binary.Write(&bufNb, binary.BigEndian, &newBlock); err != nil {
-				return Utils.Error("MKFILE", "Error al serializar nuevo bloque padre: "+err.Error())
-			}
-			if _, err := file.Write(bufNb.Bytes()); err != nil {
-				return Utils.Error("MKFILE", "Error al escribir nuevo bloque padre: "+err.Error())
-			}
+	timeStr := time.Now().Format("2006-01-02 15:04:05")
+	copy(newInode.I_atime[:], timeStr)
+	copy(newInode.I_ctime[:], timeStr)
+	copy(newInode.I_mtime[:], timeStr)
 
-			// persistir inodo padre actualizado
-			file.Seek(currentInodeOffset, 0)
-			var bufPad bytes.Buffer
-			if err := binary.Write(&bufPad, binary.BigEndian, &currentInode); err != nil {
-				return Utils.Error("MKFILE", "Error al serializar inodo padre: "+err.Error())
-			}
-			if _, err := file.Write(bufPad.Bytes()); err != nil {
-				return Utils.Error("MKFILE", "Error al escribir inodo padre: "+err.Error())
-			}
-
-			// actualizar superbloque en disco
-			file.Seek(particion.Part_start, 0)
-			var bufS1 bytes.Buffer
-			if err := binary.Write(&bufS1, binary.BigEndian, &super); err != nil {
-				return Utils.Error("MKFILE", "Error al serializar superbloque: "+err.Error())
-			}
-			if _, err := file.Write(bufS1.Bytes()); err != nil {
-				return Utils.Error("MKFILE", "Error al escribir superbloque: "+err.Error())
-			}
+	// Escribir contenido en bloques
+	for i := 0; i < len(contentBytes); i += BLOCK_SIZE {
+		blockIndex := i / BLOCK_SIZE
+		if blockIndex >= MAX_DIRECT_BLOCKS {
+			break
 		}
 
-		blk2 := currentInode.I_block[b]
-		if blk2 == int64(-1) {
+		super.S_first_blo++
+		newInode.I_block[blockIndex] = super.S_first_blo
+
+		var fileBlock Structs.BloquesArchivos
+		end := i + BLOCK_SIZE
+		if end > len(contentBytes) {
+			end = len(contentBytes)
+		}
+		copy(fileBlock.B_content[:], contentBytes[i:end])
+
+		blockPos := super.S_block_start + (newInode.I_block[blockIndex] * tamBloqueArch)
+		file.Seek(blockPos, 0)
+		if err := binary.Write(file, binary.LittleEndian, &fileBlock); err != nil {
+			return Utils.Error("MKFILE", "Error escribiendo bloque de archivo")
+		}
+
+		file.Seek(super.S_bm_block_start+newInode.I_block[blockIndex], 0)
+		file.Write([]byte{'1'})
+		super.S_free_blocks_count--
+	}
+
+	// Asignar y escribir nuevo inodo
+	super.S_firts_ino++
+	super.S_free_inodes_count--
+	newInodePos := super.S_inode_start + (super.S_firts_ino * tamInodo)
+
+	file.Seek(newInodePos, 0)
+	if err := binary.Write(file, binary.LittleEndian, &newInode); err != nil {
+		return Utils.Error("MKFILE", "Error escribiendo nuevo inodo")
+	}
+
+	// Marcar inodo como usado
+	file.Seek(super.S_bm_inode_start+super.S_firts_ino, 0)
+	file.Write([]byte{'1'})
+
+	// Agregar entrada en directorio padre
+	found := false
+	for i := 0; i < MAX_DIRECT_BLOCKS && !found; i++ {
+		if currentInode.I_block[i] == -1 {
+			// Crear nuevo bloque de directorio si es necesario
+			super.S_first_blo++
+			currentInode.I_block[i] = super.S_first_blo
+
+			var newDirBlock Structs.BloquesCarpetas
+			for j := range newDirBlock.B_content {
+				newDirBlock.B_content[j].B_inodo = -1
+			}
+
+			blockPos := super.S_block_start + (currentInode.I_block[i] * tamBloqueCarp)
+			file.Seek(blockPos, 0)
+			if err := binary.Write(file, binary.LittleEndian, &newDirBlock); err != nil {
+				return Utils.Error("MKFILE", "Error creando bloque directorio")
+			}
+
+			file.Seek(super.S_bm_block_start+currentInode.I_block[i], 0)
+			file.Write([]byte{'1'})
+			super.S_free_blocks_count--
+		}
+
+		var dirBlock Structs.BloquesCarpetas
+		blockPos := super.S_block_start + (currentInode.I_block[i] * tamBloqueCarp)
+		file.Seek(blockPos, 0)
+		if err := binary.Read(file, binary.LittleEndian, &dirBlock); err != nil {
 			continue
 		}
-		posBloque2 := blockStart + int64(tamBloqueCarp)*blk2
-		file.Seek(posBloque2, 0)
-		tmpb2 := make([]byte, tamBloqueCarp)
-		if _, err := file.Read(tmpb2); err != nil {
-			return Utils.Error("MKFILE", "Error al leer bloque padre: "+err.Error())
-		}
-		if err := binary.Read(bytes.NewBuffer(tmpb2), binary.BigEndian, &parentBlock); err != nil {
-			return Utils.Error("MKFILE", "Error al decodificar bloque padre: "+err.Error())
-		}
-		for e := 0; e < len(parentBlock.B_content); e++ {
-			if parentBlock.B_content[e].B_inodo == int64(-1) {
-				// reservar entrada temporal
-				parentBlock.B_content[e].B_inodo = int64(-2)
-				copy(parentBlock.B_content[e].B_name[:], filename)
-				file.Seek(posBloque2, 0)
-				var bufPb bytes.Buffer
-				if err := binary.Write(&bufPb, binary.BigEndian, &parentBlock); err != nil {
-					return Utils.Error("MKFILE", "Error al serializar bloque padre: "+err.Error())
+
+		// Buscar espacio libre en el bloque
+		for j := range dirBlock.B_content {
+			if dirBlock.B_content[j].B_inodo == -1 {
+				copy(dirBlock.B_content[j].B_name[:], fileName)
+				dirBlock.B_content[j].B_inodo = super.S_firts_ino
+
+				file.Seek(blockPos, 0)
+				if err := binary.Write(file, binary.LittleEndian, &dirBlock); err != nil {
+					return Utils.Error("MKFILE", "Error actualizando bloque directorio")
 				}
-				if _, err := file.Write(bufPb.Bytes()); err != nil {
-					return Utils.Error("MKFILE", "Error al escribir bloque padre: "+err.Error())
-				}
-				parentBloquePos = posBloque2
-				placed = true
+				found = true
 				break
 			}
 		}
 	}
 
-	if !placed {
-		return Utils.Error("MKFILE", "No hay espacio para crear el archivo: "+filename)
+	if !found {
+		return Utils.Error("MKFILE", "No hay espacio en el directorio para crear el archivo")
 	}
 
-	// asignar nuevo inodo
+	// Actualizar inodo padre
+	file.Seek(currentInodePos, 0)
+	if err := binary.Write(file, binary.LittleEndian, &currentInode); err != nil {
+		return Utils.Error("MKFILE", "Error actualizando inodo padre")
+	}
+
+	// Actualizar superbloque
+	file.Seek(particion.Part_start, 0)
+	if err := binary.Write(file, binary.LittleEndian, &super); err != nil {
+		return Utils.Error("MKFILE", "Error actualizando superbloque")
+	}
+
+	return Utils.Mensaje("MKFILE", fmt.Sprintf("Archivo '%s' creado exitosamente", path))
+}
+
+// Función auxiliar para crear un directorio
+func crearDirectorio(super *Structs.SuperBloque, file *os.File, name string, uid, gid int) (Structs.Inodos, int64, error) {
+	tamInodo := int64(unsafe.Sizeof(Structs.Inodos{}))
+	tamBloqueCarp := int64(unsafe.Sizeof(Structs.BloquesCarpetas{}))
+
+	// Crear nuevo inodo para el directorio
+	newInode := Structs.NewInodos()
+	for i := range newInode.I_block {
+		newInode.I_block[i] = -1
+	}
+
+	newInode.I_uid = int64(uid)
+	newInode.I_gid = int64(gid)
+	newInode.I_size = 0
+	newInode.I_type = DIR_TYPE
+	newInode.I_perm = DEFAULT_PERM
+
+	timeStr := time.Now().Format("2006-01-02 15:04:05")
+	copy(newInode.I_atime[:], timeStr)
+	copy(newInode.I_ctime[:], timeStr)
+	copy(newInode.I_mtime[:], timeStr)
+
+	// Crear primer bloque de directorio
+	super.S_first_blo++
+	newInode.I_block[0] = super.S_first_blo
+
+	var dirBlock Structs.BloquesCarpetas
+	for i := range dirBlock.B_content {
+		dirBlock.B_content[i].B_inodo = -1
+	}
+
+	// Escribir bloque de directorio
+	blockPos := super.S_block_start + (newInode.I_block[0] * tamBloqueCarp)
+	file.Seek(blockPos, 0)
+	if err := binary.Write(file, binary.LittleEndian, &dirBlock); err != nil {
+		return Structs.Inodos{}, 0, err
+	}
+
+	// Marcar bloque como usado
+	file.Seek(super.S_bm_block_start+newInode.I_block[0], 0)
+	file.Write([]byte{'1'})
+	super.S_free_blocks_count--
+
+	// Asignar y escribir nuevo inodo
 	super.S_firts_ino++
-	nInodo := super.S_firts_ino
-	// marcar bitmap inodo
-	file.Seek(bmInodosStart+int64(nInodo), 0)
+	super.S_free_inodes_count--
+	newInodePos := super.S_inode_start + (super.S_firts_ino * tamInodo)
+
+	file.Seek(newInodePos, 0)
+	if err := binary.Write(file, binary.LittleEndian, &newInode); err != nil {
+		return Structs.Inodos{}, 0, err
+	}
+
+	// Marcar inodo como usado
+	file.Seek(super.S_bm_inode_start+super.S_firts_ino, 0)
 	file.Write([]byte{'1'})
 
-	var newInodo Structs.Inodos
-	newInodo.I_uid = int64(sesion.Uid)
-	newInodo.I_gid = int64(sesion.Gid)
-	newInodo.I_size = int64(size)
-	newInodo.I_type = 1 // archivo
-	newInodo.I_perm = 664
-	for ib := 0; ib < len(newInodo.I_block); ib++ {
-		newInodo.I_block[ib] = int64(-1)
-	}
-
-	// preparar contenido
-	var contentBytes []byte
-	if cont != "" {
-		cb, err := os.ReadFile(strings.ReplaceAll(cont, "\"", ""))
-		if err != nil {
-			return Utils.Error("MKFILE", "No se pudo leer archivo de contenido: "+err.Error())
-		}
-		if size > 0 && int64(len(cb)) > size {
-			contentBytes = cb[:size]
-		} else {
-			contentBytes = cb
-			for int64(len(contentBytes)) < size {
-				contentBytes = append(contentBytes, byte('0'+(len(contentBytes)%10)))
-			}
-		}
-	} else {
-		for int64(len(contentBytes)) < size {
-			contentBytes = append(contentBytes, byte('0'+(len(contentBytes)%10)))
-		}
-	}
-
-	// escribir bloques de archivo
-	bytesRemaining := int64(len(contentBytes))
-	offset := int64(0)
-	blockIdx := 0
-	for bytesRemaining > 0 && blockIdx < len(newInodo.I_block) {
-		super.S_first_blo++
-		nBloque := super.S_first_blo
-		newInodo.I_block[blockIdx] = nBloque
-
-		// marcar bitmap block
-		file.Seek(bmBloquesStart+int64(nBloque), 0)
-		file.Write([]byte{'1'})
-
-		var block Structs.BloquesArchivos
-		// inicializar
-		for i := 0; i < len(block.B_content); i++ {
-			block.B_content[i] = 0
-		}
-		toWrite := int64(len(block.B_content))
-		if bytesRemaining < toWrite {
-			toWrite = bytesRemaining
-		}
-		copy(block.B_content[:toWrite], contentBytes[offset:offset+toWrite])
-
-		posBloque := blockStart + int64(tamBloqueArch)*nBloque
-		file.Seek(posBloque, 0)
-		var bufB bytes.Buffer
-		if err := binary.Write(&bufB, binary.BigEndian, &block); err != nil {
-			return Utils.Error("MKFILE", "Error al serializar bloque archivo: "+err.Error())
-		}
-		if _, err := file.Write(bufB.Bytes()); err != nil {
-			return Utils.Error("MKFILE", "Error al escribir bloque archivo: "+err.Error())
-		}
-
-		bytesRemaining -= toWrite
-		offset += toWrite
-		blockIdx++
-	}
-
-	// escribir inodo nuevo
-	posNewInodo := inodoStart + int64(tamInodo)*nInodo
-	file.Seek(posNewInodo, 0)
-	var bufNi bytes.Buffer
-	if err := binary.Write(&bufNi, binary.BigEndian, &newInodo); err != nil {
-		return Utils.Error("MKFILE", "Error al serializar nuevo inodo: "+err.Error())
-	}
-	if _, err := file.Write(bufNi.Bytes()); err != nil {
-		return Utils.Error("MKFILE", "Error al escribir nuevo inodo: "+err.Error())
-	}
-
-	// actualizar bloque padre: buscar entrada con nombre y -2
-	file.Seek(parentBloquePos, 0)
-	var updatedParent Structs.BloquesCarpetas
-	tmpb := make([]byte, tamBloqueCarp)
-	if _, err := file.Read(tmpb); err != nil {
-		return Utils.Error("MKFILE", "Error al leer bloque padre para actualizar entrada: "+err.Error())
-	}
-	if err := binary.Read(bytes.NewBuffer(tmpb), binary.BigEndian, &updatedParent); err != nil {
-		return Utils.Error("MKFILE", "Error al decodificar bloque padre: "+err.Error())
-	}
-	for e := 0; e < len(updatedParent.B_content); e++ {
-		name := strings.Trim(string(updatedParent.B_content[e].B_name[:]), "\x00")
-		if name == filename && updatedParent.B_content[e].B_inodo == int64(-2) {
-			updatedParent.B_content[e].B_inodo = nInodo
-			break
-		}
-	}
-	file.Seek(parentBloquePos, 0)
-	var bufPf bytes.Buffer
-	if err := binary.Write(&bufPf, binary.BigEndian, &updatedParent); err != nil {
-		return Utils.Error("MKFILE", "Error al serializar bloque padre final: "+err.Error())
-	}
-	if _, err := file.Write(bufPf.Bytes()); err != nil {
-		return Utils.Error("MKFILE", "Error al escribir bloque padre final: "+err.Error())
-	}
-
-	// persistir superbloque actualizado
-	file.Seek(particion.Part_start, 0)
-	var bufS bytes.Buffer
-	if err := binary.Write(&bufS, binary.BigEndian, &super); err != nil {
-		return Utils.Error("MKFILE", "Error al serializar superbloque: "+err.Error())
-	}
-	if _, err := file.Write(bufS.Bytes()); err != nil {
-		return Utils.Error("MKFILE", "Error al escribir superbloque: "+err.Error())
-	}
-	file.Sync()
-
-	return Utils.Mensaje("MKFILE", fmt.Sprintf("Archivo '%s' creado correctamente", path))
+	return newInode, newInodePos, nil
 }

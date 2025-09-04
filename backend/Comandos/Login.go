@@ -1,7 +1,6 @@
 package Comandos
 
 import (
-	"bytes"
 	"encoding/binary"
 	"fmt"
 	"os"
@@ -104,24 +103,29 @@ func login(usuario, password, idParticion string) bool {
 	// Leer SuperBloque
 	super := Structs.NewSuperBloque()
 	file.Seek(particion.Part_start, 0)
-	data := leerBytes(file, int(unsafe.Sizeof(Structs.SuperBloque{})))
-	buffer := bytes.NewBuffer(data)
-	err_ := binary.Read(buffer, binary.BigEndian, &super)
-	if err_ != nil {
-		fmt.Printf("❌ LOGIN: Error al leer superbloque: %v\n", err_)
+
+	// CORREGIDO: Usar LittleEndian en vez de LittleEndian
+	if err := binary.Read(file, binary.LittleEndian, &super); err != nil {
+		fmt.Printf("❌ LOGIN: Error al leer superbloque: %v\n", err)
 		return false
 	}
 
-	fmt.Printf("🔧 DEBUG: SuperBloque leído - FS: %d\n", super.S_filesystem_type)
+	fmt.Printf("🔧 DEBUG: SuperBloque leído - FS: %d, Inodos: %d\n",
+		super.S_filesystem_type, super.S_inodes_count)
 
 	// Leer inodo del archivo users.txt (inodo 1)
 	inodo := Structs.NewInodos()
 	file.Seek(super.S_inode_start+int64(unsafe.Sizeof(Structs.Inodos{})), 0)
-	data = leerBytes(file, int(unsafe.Sizeof(Structs.Inodos{})))
-	buffer = bytes.NewBuffer(data)
-	err_ = binary.Read(buffer, binary.BigEndian, &inodo)
-	if err_ != nil {
-		fmt.Printf("❌ LOGIN: Error al leer inodo users.txt: %v\n", err_)
+
+	// CORREGIDO: Usar LittleEndian en vez de LittleEndian
+	if err := binary.Read(file, binary.LittleEndian, &inodo); err != nil {
+		fmt.Printf("❌ LOGIN: Error al leer inodo users.txt: %v\n", err)
+		return false
+	}
+
+	// Verificar que sea un archivo
+	if inodo.I_type != 1 {
+		fmt.Printf("❌ LOGIN: El inodo users.txt no es un archivo (tipo=%d)\n", inodo.I_type)
 		return false
 	}
 
@@ -141,42 +145,40 @@ func login(usuario, password, idParticion string) bool {
 }
 
 // leerContenidoUsersArchivo lee el contenido completo del archivo users.txt
+// leerContenidoUsersArchivo lee el contenido completo del archivo users.txt
 func leerContenidoUsersArchivo(file *os.File, super Structs.SuperBloque, inodo Structs.Inodos) string {
-	var contenido strings.Builder
-
-	// Calcular posición de los bloques de archivos
-	mitadBA := (super.S_block_start + int64(unsafe.Sizeof(Structs.BloquesCarpetas{}))) // Después del bloque 0 (directorio)
-	tamBA := int64(unsafe.Sizeof(Structs.BloquesArchivos{}))
-
-	// Leer todos los bloques del archivo
-	for bloque := 0; bloque < 16; bloque++ {
-		if inodo.I_block[bloque] == -1 {
-			break
-		}
-
-		// Calcular posición del bloque
-		posicionBloque := mitadBA + (int64(inodo.I_block[bloque]-1) * tamBA)
-
-		file.Seek(posicionBloque, 0)
-		data := leerBytes(file, int(tamBA))
-		buffer := bytes.NewBuffer(data)
-
-		var bloqueArchivo Structs.BloquesArchivos
-		err := binary.Read(buffer, binary.BigEndian, &bloqueArchivo)
-		if err != nil {
-			fmt.Printf("❌ Error al leer bloque de archivo: %v\n", err)
-			break
-		}
-
-		// Extraer contenido del bloque
-		for i := 0; i < len(bloqueArchivo.B_content); i++ {
-			if bloqueArchivo.B_content[i] != 0 {
-				contenido.WriteByte(bloqueArchivo.B_content[i])
-			}
-		}
+	// Verificamos que el inodo tenga al menos un bloque asignado
+	if inodo.I_block[0] == -1 {
+		fmt.Println("❌ LOGIN: El archivo users.txt no tiene bloques asignados")
+		return ""
 	}
 
-	return contenido.String()
+	// Calcular el tamaño real del archivo
+	tamanoArchivo := inodo.I_size
+	fmt.Printf("🔧 DEBUG: Tamaño del archivo users.txt: %d bytes\n", tamanoArchivo)
+
+	// CORRECCIÓN CRÍTICA: Usar el mismo cálculo exacto que en formatearEXT2
+	// El problema está en cómo se calcula la posición del bloque
+	tamanoBloqueCarpetas := int64(unsafe.Sizeof(Structs.BloquesCarpetas{}))
+	bloquePos := super.S_block_start + int64(inodo.I_block[0])*tamanoBloqueCarpetas
+
+	fmt.Printf("🔧 DEBUG: Leyendo bloque %d en posición %d\n", inodo.I_block[0], bloquePos)
+
+	// Posicionar el puntero de archivo
+	file.Seek(bloquePos, 0)
+
+	// Crear un objeto BloquesArchivos y leerlo directamente con binary.Read
+	var bloqueArchivo Structs.BloquesArchivos
+	if err := binary.Read(file, binary.LittleEndian, &bloqueArchivo); err != nil {
+		fmt.Printf("❌ LOGIN: Error al leer bloque de archivo: %v\n", err)
+		return ""
+	}
+
+	// Extraer el contenido hasta el tamaño del archivo
+	contenido := string(bloqueArchivo.B_content[:tamanoArchivo])
+	fmt.Printf("🔧 DEBUG: Contenido completo (%d bytes):\n%s\n", len(contenido), contenido)
+
+	return contenido
 }
 
 // verificarCredencialesLogin verifica usuario y contraseña en el contenido de users.txt
@@ -193,16 +195,20 @@ func verificarCredencialesLogin(usuario, password, contenidoUsers, idParticion s
 		}
 
 		// Verificar si es una línea de usuario
-		if linea[2] == 'U' || linea[2] == 'u' {
-			campos := strings.Split(linea, ",")
-			if len(campos) >= 5 && campos[0] != "0" {
-				idUsuario := campos[0]
-				nombreUsuario := campos[3]
-				passwordUsuario := campos[4]
-				nombreGrupo := campos[2]
+		partes := strings.Split(linea, ",")
+		if len(partes) < 5 {
+			continue
+		}
 
-				fmt.Printf("🔧 DEBUG: Usuario encontrado - ID: %s, Nombre: %s, Grupo: %s\n",
-					idUsuario, nombreUsuario, nombreGrupo)
+		if partes[1] == "U" || partes[1] == "u" {
+			if partes[0] != "0" {
+				idUsuario := partes[0]
+				nombreGrupo := partes[2]     // GRUPO está en posición 2
+				nombreUsuario := partes[3]   // NOMBRE está en posición 3
+				passwordUsuario := partes[4] // PASSWORD está en posición 4
+
+				fmt.Printf("🔧 DEBUG: Usuario encontrado - ID: %s, Nombre: %s, Grupo: %s, Password: %s\n",
+					idUsuario, nombreUsuario, nombreGrupo, passwordUsuario)
 
 				// Verificar credenciales
 				if Utils.Comparar(nombreUsuario, usuario) && Utils.Comparar(passwordUsuario, password) {
@@ -229,6 +235,10 @@ func verificarCredencialesLogin(usuario, password, contenidoUsers, idParticion s
 
 					fmt.Printf("✅ LOGIN: Sesión iniciada - UID: %d, GID: %d\n", uid, gid)
 					return true
+				} else {
+					// Agregar depuración adicional para ver qué falla
+					fmt.Printf("🔧 DEBUG: Comparación fallida - Usuario DB: '%s' vs Input: '%s', Pass DB: '%s' vs Input: '%s'\n",
+						nombreUsuario, usuario, passwordUsuario, password)
 				}
 			}
 		}
@@ -242,6 +252,8 @@ func verificarCredencialesLogin(usuario, password, contenidoUsers, idParticion s
 func buscarGIDGrupo(nombreGrupo, contenidoUsers string) int {
 	lineas := strings.Split(strings.TrimSpace(contenidoUsers), "\n")
 
+	fmt.Printf("🔧 DEBUG: Buscando grupo '%s' en contenido users.txt\n", nombreGrupo)
+
 	for _, linea := range lineas {
 		linea = strings.TrimSpace(linea)
 		if linea == "" || len(linea) < 3 {
@@ -249,23 +261,29 @@ func buscarGIDGrupo(nombreGrupo, contenidoUsers string) int {
 		}
 
 		// Verificar si es una línea de grupo
-		if (linea[2] == 'G' || linea[2] == 'g') && linea[0] != '0' {
-			campos := strings.Split(linea, ",")
-			if len(campos) >= 3 {
-				idGrupo := campos[0]
-				nombreGrupoArchivo := campos[2]
+		partes := strings.Split(linea, ",")
+		if len(partes) < 3 {
+			continue
+		}
 
-				if nombreGrupoArchivo == nombreGrupo {
-					gid, err := strconv.Atoi(idGrupo)
-					if err != nil {
-						return -1
-					}
-					return gid
+		if (partes[1] == "G" || partes[1] == "g") && partes[0] != "0" {
+			idGrupo := partes[0]
+			nombreGrupoArchivo := partes[2]
+
+			fmt.Printf("🔧 DEBUG: Comparando grupo '%s' con '%s'\n", nombreGrupoArchivo, nombreGrupo)
+
+			if Utils.Comparar(nombreGrupoArchivo, nombreGrupo) {
+				gid, err := strconv.Atoi(idGrupo)
+				if err != nil {
+					return -1
 				}
+				fmt.Printf("✅ DEBUG: Grupo encontrado - ID: %d\n", gid)
+				return gid
 			}
 		}
 	}
 
+	fmt.Printf("❌ DEBUG: Grupo '%s' no encontrado\n", nombreGrupo)
 	return -1 // No encontrado
 }
 
@@ -324,11 +342,4 @@ func MostrarInfoSesion() string {
 	info += fmt.Sprintf("- Partición: %s\n", Logged.Id)
 
 	return info
-}
-
-// leerBytes función auxiliar para leer bytes del archivo
-func leerBytes(file *os.File, size int) []byte {
-	bytes := make([]byte, size)
-	file.Read(bytes)
-	return bytes
 }

@@ -53,7 +53,7 @@ func escribirContenidoArchivo(pathDisco string, particion Structs.Particion, sup
 				// Actualizar superbloque en disco
 				file.Seek(particion.Part_start, 0)
 				var bufferSuper bytes.Buffer
-				if err := binary.Write(&bufferSuper, binary.BigEndian, super); err != nil {
+				if err := binary.Write(&bufferSuper, binary.LittleEndian, super); err != nil {
 					return err
 				}
 				if _, err := file.Write(bufferSuper.Bytes()); err != nil {
@@ -88,7 +88,7 @@ func escribirContenidoArchivo(pathDisco string, particion Structs.Particion, sup
 		file.Seek(posicionBloque, 0)
 
 		var bufferBloque bytes.Buffer
-		if err := binary.Write(&bufferBloque, binary.BigEndian, bloqueArchivo); err != nil {
+		if err := binary.Write(&bufferBloque, binary.LittleEndian, bloqueArchivo); err != nil {
 			return err
 		}
 		if _, err := file.Write(bufferBloque.Bytes()); err != nil {
@@ -101,7 +101,7 @@ func escribirContenidoArchivo(pathDisco string, particion Structs.Particion, sup
 		data := make([]byte, tamBA)
 		file.Read(data)
 		buf := bytes.NewBuffer(data)
-		if err := binary.Read(buf, binary.BigEndian, &verificacion); err != nil {
+		if err := binary.Read(buf, binary.LittleEndian, &verificacion); err != nil {
 			return err
 		}
 		// Debug: imprimir los primeros bytes escritos (opcional)
@@ -114,7 +114,7 @@ func escribirContenidoArchivo(pathDisco string, particion Structs.Particion, sup
 	// Escribir inodo actualizado
 	file.Seek(super.S_inode_start+int64(unsafe.Sizeof(Structs.Inodos{})), 0)
 	var bufferInodo bytes.Buffer
-	if err := binary.Write(&bufferInodo, binary.BigEndian, inodo); err != nil {
+	if err := binary.Write(&bufferInodo, binary.LittleEndian, inodo); err != nil {
 		return err
 	}
 	if _, err := file.Write(bufferInodo.Bytes()); err != nil {

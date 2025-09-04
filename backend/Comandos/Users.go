@@ -151,7 +151,7 @@ func mkusr(usuario, password, grupo string) string {
 	file.Seek(particion.Part_start, 0)
 	data := leerBytesUsers(file, int(unsafe.Sizeof(Structs.SuperBloque{})))
 	buffer := bytes.NewBuffer(data)
-	err_ := binary.Read(buffer, binary.BigEndian, &super)
+	err_ := binary.Read(buffer, binary.LittleEndian, &super)
 	if err_ != nil {
 		return Utils.Error("MKUSR", "Error al leer superbloque: "+err_.Error())
 	}
@@ -163,7 +163,7 @@ func mkusr(usuario, password, grupo string) string {
 	file.Seek(super.S_inode_start+int64(unsafe.Sizeof(Structs.Inodos{})), 0)
 	data = leerBytesUsers(file, int(unsafe.Sizeof(Structs.Inodos{})))
 	buffer = bytes.NewBuffer(data)
-	err_ = binary.Read(buffer, binary.BigEndian, &inodo)
+	err_ = binary.Read(buffer, binary.LittleEndian, &inodo)
 	if err_ != nil {
 		return Utils.Error("MKUSR", "Error al leer inodo users.txt: "+err_.Error())
 	}
@@ -269,7 +269,7 @@ func rmusr(usuario string) string {
 	file.Seek(particion.Part_start, 0)
 	data := leerBytesUsers(file, int(unsafe.Sizeof(Structs.SuperBloque{})))
 	buffer := bytes.NewBuffer(data)
-	err_ := binary.Read(buffer, binary.BigEndian, &super)
+	err_ := binary.Read(buffer, binary.LittleEndian, &super)
 	if err_ != nil {
 		return Utils.Error("RMUSR", "Error al leer superbloque: "+err_.Error())
 	}
@@ -279,7 +279,7 @@ func rmusr(usuario string) string {
 	file.Seek(super.S_inode_start+int64(unsafe.Sizeof(Structs.Inodos{})), 0)
 	data = leerBytesUsers(file, int(unsafe.Sizeof(Structs.Inodos{})))
 	buffer = bytes.NewBuffer(data)
-	err_ = binary.Read(buffer, binary.BigEndian, &inodo)
+	err_ = binary.Read(buffer, binary.LittleEndian, &inodo)
 	if err_ != nil {
 		return Utils.Error("RMUSR", "Error al leer inodo users.txt: "+err_.Error())
 	}

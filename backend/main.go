@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"godisk-backend/Comandos"
@@ -41,7 +42,7 @@ func enableCORS(w http.ResponseWriter) {
 }
 
 func serveReportsHandler(w http.ResponseWriter, r *http.Request) {
-	// Habilitar CORS para cualquier origen
+	// Habilitar CORS
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
 	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
@@ -53,26 +54,45 @@ func serveReportsHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Obtener la ruta solicitada (después de /reports)
 	requestPath := r.URL.Path[len("/reports"):]
+	fmt.Printf("🔍 Solicitud recibida: %s\n", requestPath)
 
 	// Verificar que la ruta no sea vacía y no contenga "../" para evitar directory traversal
 	if requestPath == "" || strings.Contains(requestPath, "../") {
-		fmt.Printf("❌ Ruta de reporte inválida: %s\n", requestPath)
+		fmt.Printf("❌ Ruta inválida: %s\n", requestPath)
 		w.WriteHeader(http.StatusBadRequest)
 		w.Write([]byte("Ruta de reporte inválida"))
 		return
 	}
 
-	fmt.Printf("🔍 Sirviendo reporte: %s\n", requestPath)
+	// CORRECCIÓN: Mantener la ruta absoluta - NO ELIMINAR EL PRIMER SLASH
+	// Esto es clave para que funcione con rutas absolutas como /home/javiermint/...
+
+	fmt.Printf("🔍 Buscando archivo: %s\n", requestPath)
 
 	// Verificar que el archivo existe
 	if _, err := os.Stat(requestPath); os.IsNotExist(err) {
-		fmt.Printf("❌ Archivo no encontrado: %s\n", requestPath)
+		fmt.Printf("❌ No se encontró: %s\n", requestPath)
 		w.WriteHeader(http.StatusNotFound)
-		w.Write([]byte("Archivo no encontrado"))
+		w.Write([]byte("Archivo no encontrado: " + requestPath))
 		return
 	}
 
-	// Servir el archivo estático
+	// Detectar tipo MIME basado en extensión
+	ext := filepath.Ext(requestPath)
+	switch strings.ToLower(ext) {
+	case ".png":
+		w.Header().Set("Content-Type", "image/png")
+	case ".jpg", ".jpeg":
+		w.Header().Set("Content-Type", "image/jpeg")
+	case ".svg":
+		w.Header().Set("Content-Type", "image/svg+xml")
+	case ".gif":
+		w.Header().Set("Content-Type", "image/gif")
+	case ".dot": // Para archivos DOT de Graphviz
+		w.Header().Set("Content-Type", "text/plain")
+	}
+
+	fmt.Printf("✅ Sirviendo archivo: %s\n", requestPath)
 	http.ServeFile(w, r, requestPath)
 }
 
@@ -353,15 +373,18 @@ func executeCommand(command string) string {
 }
 
 func main() {
+	// Registrar handler para reportes ANTES de iniciar el servidor
+	// para asegurar que esté disponible
+	http.HandleFunc("/reports/", serveReportsHandler)
+
 	http.HandleFunc("/api/execute", executeHandler)
 	http.HandleFunc("/api/exec-script", executeScriptHandler)
 
 	fmt.Println("🚀 Servidor Go iniciado en http://localhost:8080")
 	fmt.Println("📡 Esperando conexiones del frontend React...")
 	fmt.Println("📁 Listo para procesar comandos EXT2")
+	fmt.Println("🖼️ Servidor de reportes disponible en /reports/")
 	fmt.Println("==================================================")
-
-	http.HandleFunc("/reports/", serveReportsHandler)
 
 	log.Fatal(http.ListenAndServe(":8080", nil))
 }

@@ -1,6 +1,7 @@
 package Comandos
 
 import (
+	"bytes"
 	"encoding/binary"
 	"fmt"
 	"os"
@@ -13,40 +14,33 @@ import (
 
 // ValidarDatosCAT valida los parámetros del comando CAT
 func ValidarDatosCAT(tokens []string) string {
-	if len(tokens) < 1 {
-		return Utils.Error("CAT", "Se requiere al menos el parámetro filen")
-	}
-
 	var archivos []string
 	var idParticion string
 
-	// Parsear tokens para obtener múltiples archivos y partición
-	for i := 0; i < len(tokens); i++ {
-		token := tokens[i]
-		tk := strings.Split(token, "=")
-		if len(tk) != 2 {
+	// Parsear tokens
+	for _, token := range tokens {
+		parts := strings.Split(token, "=")
+		if len(parts) != 2 {
 			continue
 		}
 
-		param := strings.ToLower(tk[0])
-		value := strings.ReplaceAll(tk[1], "\"", "")
+		param := strings.ToLower(parts[0])
+		value := strings.Trim(parts[1], "\"") // Remover comillas
 
 		switch param {
 		case "id":
-			idParticion = tk[1] // Mantener case original del ID
+			idParticion = value
 		default:
-			// Aceptar file1, file2, file3... fileN
 			if strings.HasPrefix(param, "file") {
+				// Normalizar path
+				value = strings.ReplaceAll(value, "\\", "/")
 				archivos = append(archivos, value)
-			} else {
-				return Utils.Error("CAT", "Parámetro no reconocido: "+param)
 			}
 		}
 	}
 
-	// Validaciones
 	if len(archivos) == 0 {
-		return Utils.Error("CAT", "Se requiere al menos un archivo (filen)")
+		return Utils.Error("CAT", "Se requiere al menos un archivo (file1)")
 	}
 
 	return cat(archivos, idParticion)
@@ -54,91 +48,191 @@ func ValidarDatosCAT(tokens []string) string {
 
 // cat muestra el contenido de uno o más archivos
 func cat(archivos []string, idParticion string) string {
-	fmt.Printf("🔧 DEBUG: Ejecutando CAT con %d archivos, ID: %s\n", len(archivos), idParticion)
-
 	resultado := "\n📄 CONTENIDO DE ARCHIVOS\n"
-	resultado += "══════════════════════════════════════════════════════════════\n"
+	resultado += "═══════════════════════════════════════\n"
 
-	for i, archivo := range archivos {
-		fmt.Printf("🔧 DEBUG: Leyendo archivo: %s\n", archivo)
-
+	for _, archivo := range archivos {
 		contenido := leerArchivoReal(archivo, idParticion)
 		if contenido == "" {
-			error := fmt.Sprintf("❌ Error al leer el archivo: %s", archivo)
-			fmt.Println(error)
-			resultado += error + "\n"
+			resultado += fmt.Sprintf("❌ Error al leer: %s\n", archivo)
 			continue
 		}
-
-		// Mostrar en debug
-		fmt.Printf("📄 Contenido de %s:\n%s\n", archivo, contenido)
-
-		// Agregar al resultado
-		if i > 0 {
-			resultado += "\n" // Separador entre archivos
-		}
-		resultado += fmt.Sprintf("📄 %s:\n%s\n", archivo, contenido)
+		resultado += fmt.Sprintf("📄 %s:\n%s\n\n", archivo, contenido)
 	}
 
-	resultado += "══════════════════════════════════════════════════════════════\n"
 	return resultado
 }
 
-// leerArchivoReal lee un archivo real del sistema de archivos EXT2
 func leerArchivoReal(rutaArchivo string, idParticion string) string {
+	fmt.Printf("🔧 DEBUG: Iniciando lectura de archivo '%s'\n", rutaArchivo)
+
 	// Determinar qué partición usar
 	var idFinal string
-
 	if idParticion != "" {
 		idFinal = idParticion
-		fmt.Printf("🔧 DEBUG: Usando ID especificado: %s\n", idFinal)
 	} else {
 		idFinal = obtenerParticionDeSesion()
 		if idFinal == "" {
 			idFinal = obtenerPrimeraParticionMontada()
 			if idFinal == "" {
-				fmt.Printf("❌ CAT: No hay particiones montadas\n")
-				return ""
+				return Utils.Error("CAT", "No hay particiones montadas")
 			}
 		}
-		fmt.Printf("🔧 DEBUG: Usando ID automático: %s\n", idFinal)
 	}
 
-	fmt.Printf("🔧 DEBUG: Buscando archivo '%s' en partición %s\n", rutaArchivo, idFinal)
-
-	// 1. Obtener la partición montada
+	// Obtener la partición montada
 	var pathDisco string
 	particion := GetMount("CAT", idFinal, &pathDisco)
 	if particion == nil {
-		fmt.Printf("❌ CAT: Partición %s no está montada\n", idFinal)
-		return ""
+		return Utils.Error("CAT", "Partición no encontrada: "+idFinal)
 	}
 
-	fmt.Printf("🔧 DEBUG: Partición encontrada en: %s\n", pathDisco)
-
-	// 2. Abrir archivo del disco
-	file, err := os.Open(pathDisco)
+	// Abrir archivo del disco
+	file, err := os.OpenFile(pathDisco, os.O_RDWR, 0644)
 	if err != nil {
-		fmt.Printf("❌ CAT: Error al abrir disco: %v\n", err)
-		return ""
+		return Utils.Error("CAT", "Error abriendo disco: "+err.Error())
 	}
 	defer file.Close()
 
-	// 3. Leer superbloque
+	// Leer superbloque
+	super := Structs.NewSuperBloque()
 	file.Seek(particion.Part_start, 0)
-	var superbloque Structs.SuperBloque
-	if err := binary.Read(file, binary.BigEndian, &superbloque); err != nil {
-		fmt.Printf("❌ CAT: Error al leer superbloque: %v\n", err)
-		return ""
+	if err := binary.Read(file, binary.LittleEndian, &super); err != nil {
+		return Utils.Error("CAT", "Error leyendo superbloque: "+err.Error())
 	}
 
-	fmt.Printf("🔧 DEBUG: SuperBloque leído - FS: %d, Inodos: %d\n",
-		superbloque.S_filesystem_type, superbloque.S_inodes_count)
+	// Preparar tamaños
+	tamInodo := int64(unsafe.Sizeof(Structs.Inodos{}))
+	tamBloqueCarp := int64(unsafe.Sizeof(Structs.BloquesCarpetas{}))
+	tamBloqueArch := int64(unsafe.Sizeof(Structs.BloquesArchivos{}))
 
-	// 4. Buscar el archivo en el sistema de archivos
-	contenido := buscarArchivoEnSistema(file, superbloque, rutaArchivo)
+	// Caso especial: users.txt en la raíz
+	if rutaArchivo == "/users.txt" || rutaArchivo == "users.txt" {
+		fmt.Printf("🔧 DEBUG: Detectado users.txt\n")
+		contenido := leerUsersFile(file, super)
+		if contenido == "" {
+			return Utils.Error("CAT", "Error leyendo users.txt")
+		}
+		return contenido
+	}
 
-	return contenido
+	// Para otros archivos, proceder con la navegación normal
+	components := strings.Split(strings.TrimSpace(rutaArchivo), "/")
+	components = components[1:] // Remover elemento vacío inicial
+	if len(components) == 0 {
+		return Utils.Error("CAT", "Ruta inválida")
+	}
+
+	// Leer inodo raíz
+	var currentInode Structs.Inodos
+	currentInodePos := super.S_inode_start
+	file.Seek(currentInodePos, 0)
+	if err := binary.Read(file, binary.LittleEndian, &currentInode); err != nil {
+		return Utils.Error("CAT", "Error leyendo inodo raíz")
+	}
+
+	// Navegar la ruta
+	for i, component := range components {
+		if component == "" {
+			continue
+		}
+
+		// Si es el último componente, buscar archivo
+		if i == len(components)-1 {
+			found := false
+
+			for j := 0; j < 12 && !found && currentInode.I_block[j] != -1; j++ {
+				var dirBlock Structs.BloquesCarpetas
+				blockPos := super.S_block_start + (currentInode.I_block[j] * tamBloqueCarp)
+
+				file.Seek(blockPos, 0)
+				if err := binary.Read(file, binary.LittleEndian, &dirBlock); err != nil {
+					continue
+				}
+
+				for _, entry := range dirBlock.B_content {
+					if entry.B_inodo == -1 {
+						continue
+					}
+
+					name := strings.Trim(string(entry.B_name[:]), "\x00")
+					if name == component {
+						// Leer inodo del archivo
+						var fileInode Structs.Inodos
+						file.Seek(super.S_inode_start+(entry.B_inodo*tamInodo), 0)
+						if err := binary.Read(file, binary.LittleEndian, &fileInode); err != nil {
+							return Utils.Error("CAT", "Error leyendo inodo del archivo")
+						}
+
+						if fileInode.I_type != 1 {
+							return Utils.Error("CAT", fmt.Sprintf("'%s' no es un archivo", component))
+						}
+
+						// Leer contenido
+						var content strings.Builder
+						for k := 0; k < 12 && fileInode.I_block[k] != -1; k++ {
+							var fileBlock Structs.BloquesArchivos
+							fileBlockPos := super.S_block_start + (fileInode.I_block[k] * tamBloqueArch)
+
+							file.Seek(fileBlockPos, 0)
+							if err := binary.Read(file, binary.LittleEndian, &fileBlock); err != nil {
+								continue
+							}
+
+							// Leer solo hasta el tamaño real del archivo
+							bytesRestantes := fileInode.I_size - int64(content.Len())
+							if bytesRestantes > 64 {
+								bytesRestantes = 64
+							}
+
+							content.Write(fileBlock.B_content[:bytesRestantes])
+						}
+
+						return content.String()
+					}
+				}
+			}
+
+			if !found {
+				return Utils.Error("CAT", fmt.Sprintf("Archivo no encontrado: %s", component))
+			}
+		}
+
+		// Navegar al siguiente directorio
+		found := false
+		for j := 0; j < 12 && !found && currentInode.I_block[j] != -1; j++ {
+			var dirBlock Structs.BloquesCarpetas
+			blockPos := super.S_block_start + (currentInode.I_block[j] * tamBloqueCarp)
+
+			file.Seek(blockPos, 0)
+			if err := binary.Read(file, binary.LittleEndian, &dirBlock); err != nil {
+				continue
+			}
+
+			for _, entry := range dirBlock.B_content {
+				name := strings.Trim(string(entry.B_name[:]), "\x00")
+				if name == component {
+					file.Seek(super.S_inode_start+(entry.B_inodo*tamInodo), 0)
+					if err := binary.Read(file, binary.LittleEndian, &currentInode); err != nil {
+						return Utils.Error("CAT", "Error leyendo inodo")
+					}
+
+					if currentInode.I_type != 0 {
+						return Utils.Error("CAT", fmt.Sprintf("'%s' no es un directorio", component))
+					}
+
+					found = true
+					break
+				}
+			}
+		}
+
+		if !found {
+			return Utils.Error("CAT", fmt.Sprintf("No existe el directorio '%s'", component))
+		}
+	}
+
+	return Utils.Error("CAT", "Error inesperado leyendo archivo")
 }
 
 // buscarArchivoEnSistema busca un archivo en el sistema EXT2 y retorna su contenido
@@ -244,7 +338,7 @@ func leerInodo(file *os.File, sb Structs.SuperBloque, numeroInodo int64) (Struct
 
 	// Leer el inodo
 	file.Seek(posicion, 0)
-	err := binary.Read(file, binary.BigEndian, &inodo)
+	err := binary.Read(file, binary.LittleEndian, &inodo)
 
 	if err == nil {
 		fmt.Printf("🔧 DEBUG: Inodo %d - Tipo: %d, Tamaño: %d, Bloque[0]: %d\n",
@@ -264,7 +358,7 @@ func buscarEnDirectorio(file *os.File, sb Structs.SuperBloque, inodoDir Structs.
 
 	file.Seek(posicionBloque, 0)
 	var bloque Structs.BloquesCarpetas
-	if err := binary.Read(file, binary.BigEndian, &bloque); err != nil {
+	if err := binary.Read(file, binary.LittleEndian, &bloque); err != nil {
 		fmt.Printf("❌ CAT: Error al leer bloque de directorio: %v\n", err)
 		return -1
 	}
@@ -298,58 +392,88 @@ func buscarEnDirectorio(file *os.File, sb Structs.SuperBloque, inodoDir Structs.
 
 func leerContenidoArchivo(file *os.File, sb Structs.SuperBloque, inodo Structs.Inodos) string {
 	if inodo.I_type != 1 {
-		return "" // No es un archivo
+		return ""
 	}
 
-	fmt.Printf("🔧 DEBUG: Iniciando lectura de contenido de archivo\n")
-	fmt.Printf("🔧 DEBUG: Inodo - Tipo: %d, Tamaño: %d bytes, Bloque[0]: %d\n",
-		inodo.I_type, inodo.I_size, inodo.I_block[0])
-
-	mitadBA := sb.S_block_start + int64(unsafe.Sizeof(Structs.BloquesCarpetas{}))
-	TamBA := int64(unsafe.Sizeof(Structs.BloquesArchivos{}))
 	var contenido strings.Builder
+	tamanoBloque := int64(unsafe.Sizeof(Structs.BloquesArchivos{}))
 
-	for bloque := 0; bloque < 16; bloque++ {
-		if inodo.I_block[bloque] == -1 {
-			break
-		}
+	// Leer bloques directos
+	for i := 0; i < 12 && inodo.I_block[i] != -1; i++ {
+		posicionBloque := sb.S_block_start + (inodo.I_block[i] * tamanoBloque)
 
-		PunteroBA := mitadBA + (int64(inodo.I_block[bloque]-1) * TamBA)
-
-		fmt.Printf("🔧 DEBUG: Leyendo bloque %d en posición %d (Nº%d)\n",
-			inodo.I_block[bloque], PunteroBA, bloque)
-
-		// Leer el bloque
-		file.Seek(PunteroBA, 0)
-		var fb Structs.BloquesArchivos
-		err := binary.Read(file, binary.BigEndian, &fb)
-		if err != nil {
-			fmt.Printf("❌ CAT: Error leyendo bloque: %v\n", err)
+		var bloque Structs.BloquesArchivos
+		file.Seek(posicionBloque, 0)
+		if err := binary.Read(file, binary.LittleEndian, &bloque); err != nil {
 			continue
 		}
 
-		for i := 0; i < len(fb.B_content); i++ {
-			if fb.B_content[i] != 0 {
-				contenido.WriteByte(fb.B_content[i])
+		// Leer solo hasta el tamaño real del archivo
+		for j := 0; j < len(bloque.B_content) && int64(contenido.Len()) < inodo.I_size; j++ {
+			if bloque.B_content[j] != 0 {
+				contenido.WriteByte(bloque.B_content[j])
 			}
 		}
 	}
 
-	resultado := contenido.String()
-	fmt.Printf("✅ DEBUG: Contenido leído (%d bytes): %q\n", len(resultado), resultado)
-	return resultado
+	return contenido.String()
 }
 
-// obtenerParticionDeSesion obtiene el ID de partición de la sesión activa
+// procesarBloqueIndirecto procesa un bloque de apuntadores y lee los bloques referenciados
+func procesarBloqueIndirecto(file *os.File, sb Structs.SuperBloque,
+	numeroBloque int64, tamanoArchivo int64, bytesLeidos int64,
+	contenido *strings.Builder) int64 {
+
+	// Leer bloque de apuntadores
+	var bloqueApuntadores Structs.BloquesApuntadores
+	posicionBloque := sb.S_block_start + (numeroBloque * int64(unsafe.Sizeof(Structs.BloquesCarpetas{})))
+
+	file.Seek(posicionBloque, 0)
+	if err := binary.Read(file, binary.LittleEndian, &bloqueApuntadores); err != nil {
+		fmt.Printf("❌ CAT: Error leyendo bloque de apuntadores: %v\n", err)
+		return bytesLeidos
+	}
+
+	// Procesar cada apuntador
+	tamanoBloque := int64(unsafe.Sizeof(Structs.BloquesArchivos{}))
+	for _, ptr := range bloqueApuntadores.B_pointers {
+		if ptr == -1 || bytesLeidos >= tamanoArchivo {
+			break
+		}
+
+		// Leer bloque de datos
+		posicionDatos := sb.S_block_start + (ptr * tamanoBloque)
+		file.Seek(posicionDatos, 0)
+
+		var bloqueArchivo Structs.BloquesArchivos
+		if err := binary.Read(file, binary.LittleEndian, &bloqueArchivo); err != nil {
+			continue
+		}
+
+		// Procesar contenido
+		for _, b := range bloqueArchivo.B_content {
+			if bytesLeidos >= tamanoArchivo {
+				break
+			}
+			if b == 0 {
+				continue
+			}
+			contenido.WriteByte(b)
+			bytesLeidos++
+		}
+	}
+
+	return bytesLeidos
+}
+
+// Funciones auxiliares existentes
 func obtenerParticionDeSesion() string {
-	// ✅ INTEGRACIÓN CON LOGIN: Usar la sesión activa de Login.go
 	if EstaLogueado() {
 		return ObtenerIDParticionActual()
 	}
 	return ""
 }
 
-// obtenerPrimeraParticionMontada obtiene la primera partición montada disponible
 func obtenerPrimeraParticionMontada() string {
 	fmt.Printf("🔧 DEBUG: Buscando primera partición montada\n")
 
@@ -366,28 +490,60 @@ func obtenerPrimeraParticionMontada() string {
 	return ""
 }
 
-// listarParticionesMontadas muestra todas las particiones disponibles
-func listarParticionesMontadas() []string {
-	var particiones []string
+func leerUsersFile(file *os.File, sb Structs.SuperBloque) string {
+	// Preparar tamaños
+	tamInodo := int64(unsafe.Sizeof(Structs.Inodos{}))
+	tamBloqueArch := int64(64) // Usar tamaño fijo de 64 bytes para bloques
 
-	for i := 0; i < 99; i++ {
-		for j := 0; j < 26; j++ {
-			if DiscMont[i].Particiones[j].Estado == 1 {
-				id := convertirAString10(DiscMont[i].Particiones[j].Id_Particion)
-				nombre := convertirAString20(DiscMont[i].Particiones[j].Nombre)
-				path := convertirAString150(DiscMont[i].Path)
-
-				info := fmt.Sprintf("%s (%s en %s)", id, nombre, path)
-				particiones = append(particiones, info)
-			}
-		}
+	// Leer inodo de users.txt (inodo 1)
+	var inodoUsers Structs.Inodos
+	file.Seek(sb.S_inode_start+tamInodo, 0)
+	if err := binary.Read(file, binary.LittleEndian, &inodoUsers); err != nil {
+		fmt.Printf("❌ Error leyendo inodo users.txt: %v\n", err)
+		return ""
 	}
 
-	return particiones
-}
+	fmt.Printf("🔧 DEBUG: Leyendo users.txt - Tamaño: %d bytes\n", inodoUsers.I_size)
 
-// leerArchivoReal (versión original para compatibilidad)
-func leerArchivoOriginal(rutaArchivo string) string {
-	fmt.Printf("⚠️ DEBUG: Usando función obsoleta leerArchivo, migrando a leerArchivoReal\n")
-	return leerArchivoReal(rutaArchivo, "")
+	// Verificar que es un archivo válido
+	if inodoUsers.I_type != 1 || inodoUsers.I_size == 0 {
+		fmt.Printf("❌ Error: users.txt no es un archivo válido\n")
+		return ""
+	}
+
+	// Leer todos los bloques necesarios
+	var contenido strings.Builder
+	bytesRestantes := inodoUsers.I_size
+
+	for i := 0; i < 12 && inodoUsers.I_block[i] != -1 && bytesRestantes > 0; i++ {
+		// Calcular posición exacta del bloque
+		posBloque := sb.S_block_start + (inodoUsers.I_block[i] * tamBloqueArch)
+
+		// Crear buffer del tamaño de bloque
+		bloque := make([]byte, 64)
+
+		// Leer bloque
+		file.Seek(posBloque, 0)
+		n, err := file.Read(bloque)
+		if err != nil || n == 0 {
+			fmt.Printf("❌ Error leyendo bloque %d: %v\n", i, err)
+			continue
+		}
+
+		// Determinar cuántos bytes procesar de este bloque
+		bytesAProcesar := int64(64)
+		if bytesRestantes < 64 {
+			bytesAProcesar = bytesRestantes
+		}
+
+		// Agregar contenido válido al builder
+		contenidoBloque := string(bytes.TrimRight(bloque[:bytesAProcesar], "\x00"))
+		contenido.WriteString(contenidoBloque)
+
+		bytesRestantes -= bytesAProcesar
+	}
+
+	resultado := contenido.String()
+	fmt.Printf("🔧 DEBUG: Contenido leído (%d bytes):\n%s\n", len(resultado), resultado)
+	return resultado
 }

@@ -1,0 +1,32 @@
+digraph G {
+  rankdir=LR;
+  node [shape=record];
+  bgcolor="#FFFFFF";
+
+  bloque_0 [label="{Bloque Carpeta 0|{users.txt (1)|home (2)}}"];
+  bloque_1 [label="{Bloque Archivo 1|Hola}"];
+  bloque_2 [label="{Bloque Carpeta 2|{user2 (3)|user3 (4)}}"];
+  bloque_5 [label="{Bloque Carpeta 5|{5 (0)}}"];
+  bloque_10 [label="{Bloque Carpeta 10|{user1 (9)}}"];
+  bloque_2 -> bloque_5;
+  bloque_5 -> bloque_10;
+  bloque_3 [label="{Bloque Carpeta 3|{mediano.txt (7)}}"];
+  bloque_4 [label="{Bloque Carpeta 4|{grande.txt (8)|Hola (0)}}"];
+  bloque_6 [label="{Bloque Carpeta 6|{Mi nombre es (0)}}"];
+  bloque_7 [label="{Bloque Archivo 7|Hola}"];
+  bloque_8 [label="{Bloque Archivo 8|202307775}"];
+  bloque_9 [label="{Bloque Archivo 9|Mi nombre es}"];
+  bloque_11 [label="{Bloque Carpeta 11|{archivo.txt (10)}}"];
+  bloque_12 [label="{Bloque Archivo 12|Hola}"];
+  bloque_3 -> bloque_7;
+  bloque_4 -> bloque_8;
+  bloque_4 -> bloque_0;
+  bloque_6 -> bloque_0;
+  bloque_11 -> bloque_10;
+  bloque_0 -> bloque_1;
+  bloque_0 -> bloque_2;
+  bloque_2 -> bloque_3;
+  bloque_2 -> bloque_4;
+  bloque_5 -> bloque_0;
+  bloque_10 -> bloque_9;
+}
