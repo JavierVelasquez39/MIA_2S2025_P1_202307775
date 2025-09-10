@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 	"unsafe"
 
 	"godisk-backend/Structs"
@@ -1008,12 +1009,258 @@ func ReporteTree(path string, id string) {
 	// Implementation will go here
 }
 
-func BitMap_inodo(path string, id string) {
-	// Implementation will go here
+func BitMap_inodo(path string, id string) string {
+	// Obtener la ruta del disco
+	diskPath, found := GetDiskPathFromID(id)
+	if !found {
+		return Utils.Error("REP", "No se encontró el disco para la ID: "+id)
+	}
+
+	// Abrir el archivo del disco
+	file, err := os.Open(diskPath)
+	if err != nil {
+		return Utils.Error("REP", "Error al abrir el disco: "+err.Error())
+	}
+	defer file.Close()
+
+	// Obtener la partición montada
+	particion := GetMount("REP", id, &diskPath)
+	if particion == nil {
+		return Utils.Error("REP", "No se encontró la partición montada")
+	}
+
+	// Leer el superbloque
+	var sb Structs.SuperBloque
+	file.Seek(particion.Part_start, 0)
+	if err := binary.Read(file, binary.LittleEndian, &sb); err != nil {
+		return Utils.Error("REP", "Error al leer el superbloque: "+err.Error())
+	}
+
+	// Leer el bitmap de inodos completo
+	bitmap := make([]byte, sb.S_inodes_count)
+	file.Seek(sb.S_bm_inode_start, 0)
+	if _, err := file.Read(bitmap); err != nil {
+		return Utils.Error("REP", "Error al leer el bitmap de inodos: "+err.Error())
+	}
+
+	// Modificar para mostrar 21 filas y 21 columnas
+	const filasAMostrar = 21
+	const columnasAMostrar = 21
+
+	// Crear contenido DOT para Graphviz
+	dotContent := "digraph G {\n"
+	dotContent += "  node [shape=plaintext];\n"
+	dotContent += "  rankdir=TB;\n\n"
+
+	// Crear tabla HTML para el bitmap
+	tableContent := `<<TABLE BORDER="1" CELLBORDER="1" CELLSPACING="0" CELLPADDING="4">
+    <TR>
+        <TD COLSPAN="22" BGCOLOR="#4CAF50"><FONT COLOR="white">BITMAP DE INODOS</FONT></TD>
+    </TR>`
+
+	// Agregar encabezados de columnas
+	tableContent += `<TR BGCOLOR="#f2f2f2">
+        <TD>Línea</TD>`
+	for i := 0; i < columnasAMostrar; i++ {
+		tableContent += fmt.Sprintf("<TD>%d</TD>", i)
+	}
+	tableContent += "</TR>"
+
+	// Agregar filas con datos
+	for i := int64(0); i < filasAMostrar && i < sb.S_inodes_count; i++ {
+		tableContent += fmt.Sprintf(`<TR><TD BGCOLOR="#f2f2f2">%d</TD>`, i+1)
+
+		// Mostrar columnas por fila
+		for j := int64(0); j < columnasAMostrar && (i*columnasAMostrar+j) < sb.S_inodes_count; j++ {
+			bit := "0"
+			if bitmap[i*columnasAMostrar+j] == '1' {
+				bit = "1"
+			}
+			bgColor := "#ffffff"
+			if bit == "1" {
+				bgColor = "#90EE90" // Verde claro para bits en uso
+			}
+			tableContent += fmt.Sprintf(`<TD BGCOLOR="%s">%s</TD>`, bgColor, bit)
+		}
+
+		tableContent += "</TR>"
+	}
+
+	// Agregar indicador de que hay más contenido
+	if sb.S_inodes_count > (filasAMostrar * columnasAMostrar) {
+		tableContent += fmt.Sprintf(`
+        <TR>
+            <TD COLSPAN="22" BGCOLOR="#f2f2f2">
+                <FONT COLOR="#666666">... %d inodos más ...</FONT>
+            </TD>
+        </TR>`, sb.S_inodes_count-(filasAMostrar*columnasAMostrar))
+	}
+
+	tableContent += "</TABLE>>"
+
+	// Agregar el nodo con la tabla al grafo
+	dotContent += fmt.Sprintf("  bitmap [label=%s];\n", tableContent)
+	dotContent += "}\n"
+
+	// Escribir archivo DOT
+	dotPath := path + ".dot"
+	if err := os.WriteFile(dotPath, []byte(dotContent), 0644); err != nil {
+		return Utils.Error("REP", "Error escribiendo archivo DOT: "+err.Error())
+	}
+
+	// Generar imagen PNG usando Graphviz
+	cmd := exec.Command("dot", "-Tpng", dotPath, "-o", path)
+	if err := cmd.Run(); err != nil {
+		return Utils.Error("REP", "Error generando imagen: "+err.Error())
+	}
+
+	// Eliminar archivo DOT temporal
+	os.Remove(dotPath)
+
+	return Utils.Mensaje("REP", "Reporte de bitmap de inodos generado exitosamente")
 }
 
-func BitMap_block(path string, id string) {
-	// Implementation will go here
+func BitMap_block(path string, id string) string {
+	// Obtener la ruta del disco
+	diskPath, found := GetDiskPathFromID(id)
+	if !found {
+		return Utils.Error("REP", "No se encontró el disco para la ID: "+id)
+	}
+
+	// Abrir el archivo del disco
+	file, err := os.Open(diskPath)
+	if err != nil {
+		return Utils.Error("REP", "Error al abrir el disco: "+err.Error())
+	}
+	defer file.Close()
+
+	// Obtener la partición montada
+	particion := GetMount("REP", id, &diskPath)
+	if particion == nil {
+		return Utils.Error("REP", "No se encontró la partición montada")
+	}
+
+	// Leer el superbloque
+	var sb Structs.SuperBloque
+	file.Seek(particion.Part_start, 0)
+	if err := binary.Read(file, binary.LittleEndian, &sb); err != nil {
+		return Utils.Error("REP", "Error al leer el superbloque: "+err.Error())
+	}
+
+	// Leer el bitmap de bloques completo
+	bitmap := make([]byte, sb.S_blocks_count)
+	file.Seek(sb.S_bm_block_start, 0)
+	if _, err := file.Read(bitmap); err != nil {
+		return Utils.Error("REP", "Error al leer el bitmap de bloques: "+err.Error())
+	}
+
+	// Modificar para mostrar 21 filas y 21 columnas
+	const filasAMostrar = 21
+	const columnasAMostrar = 21
+
+	// Crear contenido DOT para Graphviz
+	dotContent := "digraph G {\n"
+	dotContent += "  node [shape=plaintext];\n"
+	dotContent += "  rankdir=TB;\n\n"
+
+	// Crear tabla HTML para el bitmap
+	tableContent := `<<TABLE BORDER="1" CELLBORDER="1" CELLSPACING="0" CELLPADDING="4">
+    <TR>
+        <TD COLSPAN="22" BGCOLOR="#4CAF50"><FONT COLOR="white">BITMAP DE BLOQUES</FONT></TD>
+    </TR>`
+
+	// Agregar encabezados de columnas
+	tableContent += `<TR BGCOLOR="#f2f2f2">
+        <TD>Línea</TD>`
+	for i := 0; i < columnasAMostrar; i++ {
+		tableContent += fmt.Sprintf("<TD>%d</TD>", i)
+	}
+	tableContent += "</TR>"
+
+	// Agregar filas con datos
+	for i := int64(0); i < filasAMostrar && i < sb.S_blocks_count; i++ {
+		tableContent += fmt.Sprintf(`<TR><TD BGCOLOR="#f2f2f2">%d</TD>`, i+1)
+
+		// Mostrar columnas por fila
+		for j := int64(0); j < columnasAMostrar && (i*columnasAMostrar+j) < sb.S_blocks_count; j++ {
+			bit := "0"
+			if bitmap[i*columnasAMostrar+j] == '1' {
+				bit = "1"
+			}
+			bgColor := "#ffffff"
+			if bit == "1" {
+				bgColor = "#90EE90" // Verde claro para bits en uso
+			}
+			tableContent += fmt.Sprintf(`<TD BGCOLOR="%s">%s</TD>`, bgColor, bit)
+		}
+
+		tableContent += "</TR>"
+	}
+
+	// Agregar indicador de que hay más contenido
+	if sb.S_blocks_count > (filasAMostrar * columnasAMostrar) {
+		tableContent += fmt.Sprintf(`
+        <TR>
+            <TD COLSPAN="22" BGCOLOR="#f2f2f2">
+                <FONT COLOR="#666666">... %d bloques más ...</FONT>
+            </TD>
+        </TR>`, sb.S_blocks_count-(filasAMostrar*columnasAMostrar))
+	}
+
+	tableContent += "</TABLE>>"
+
+	// Agregar filas con datos
+	for i := int64(0); i < filasAMostrar && i < sb.S_blocks_count; i += columnasAMostrar {
+		tableContent += fmt.Sprintf(`<TR><TD BGCOLOR="#f2f2f2">%d</TD>`, (i/columnasAMostrar)+1)
+
+		// Mostrar columnas por fila
+		for j := int64(0); j < columnasAMostrar && (i+j) < sb.S_blocks_count; j++ {
+			bit := "0"
+			if bitmap[i+j] == '1' {
+				bit = "1"
+			}
+			bgColor := "#ffffff"
+			if bit == "1" {
+				bgColor = "#90EE90" // Verde claro para bits en uso
+			}
+			tableContent += fmt.Sprintf(`<TD BGCOLOR="%s">%s</TD>`, bgColor, bit)
+		}
+
+		tableContent += "</TR>"
+	}
+
+	// Agregar indicador de que hay más contenido
+	if sb.S_blocks_count > (filasAMostrar * columnasAMostrar) {
+		tableContent += fmt.Sprintf(`
+        <TR>
+            <TD COLSPAN="21" BGCOLOR="#f2f2f2">
+                <FONT COLOR="#666666">... %d bloques más ...</FONT>
+            </TD>
+        </TR>`, sb.S_blocks_count-(filasAMostrar*columnasAMostrar))
+	}
+
+	tableContent += "</TABLE>>"
+
+	// Agregar el nodo con la tabla al grafo
+	dotContent += fmt.Sprintf("  bitmap [label=%s];\n", tableContent)
+	dotContent += "}\n"
+
+	// Escribir archivo DOT
+	dotPath := path + ".dot"
+	if err := os.WriteFile(dotPath, []byte(dotContent), 0644); err != nil {
+		return Utils.Error("REP", "Error escribiendo archivo DOT: "+err.Error())
+	}
+
+	// Generar imagen PNG usando Graphviz
+	cmd := exec.Command("dot", "-Tpng", dotPath, "-o", path)
+	if err := cmd.Run(); err != nil {
+		return Utils.Error("REP", "Error generando imagen: "+err.Error())
+	}
+
+	// Eliminar archivo DOT temporal
+	os.Remove(dotPath)
+
+	return Utils.Mensaje("REP", "Reporte de bitmap de bloques generado exitosamente")
 }
 
 // Report_Inode genera un reporte gráfico de los inodos
@@ -1390,12 +1637,304 @@ func procesarBloqueApuntador(file *os.File, sb Structs.SuperBloque, bloqueIdx in
 	}
 }
 
-func SB_Reporte(path string, id string) {
-	// Implementation will go here
+func SB_Reporte(path string, id string) string {
+	// Obtener la ruta del disco
+	diskPath, found := GetDiskPathFromID(id)
+	if !found {
+		return Utils.Error("REP", "No se encontró el disco para la ID: "+id)
+	}
+
+	// Abrir el archivo del disco
+	file, err := os.Open(diskPath)
+	if err != nil {
+		return Utils.Error("REP", "Error al abrir el disco: "+err.Error())
+	}
+	defer file.Close()
+
+	// Obtener la partición montada
+	particion := GetMount("REP", id, &diskPath)
+	if particion == nil {
+		return Utils.Error("REP", "No se encontró la partición montada")
+	}
+
+	// Leer el superbloque
+	var sb Structs.SuperBloque
+	file.Seek(particion.Part_start, 0)
+	if err := binary.Read(file, binary.LittleEndian, &sb); err != nil {
+		return Utils.Error("REP", "Error al leer el superbloque: "+err.Error())
+	}
+
+	// Obtener nombre del disco
+	diskName := filepath.Base(diskPath)
+
+	// Crear contenido DOT para Graphviz
+	dotContent := "digraph G {\n"
+	dotContent += "  node [shape=plaintext];\n"
+	dotContent += "  rankdir=TB;\n\n"
+
+	// Crear tabla HTML para el superbloque
+	tableContent := `<<TABLE BORDER="1" CELLBORDER="1" CELLSPACING="0" CELLPADDING="4">
+    <TR>
+        <TD COLSPAN="2" BGCOLOR="#4CAF50"><FONT COLOR="white">REPORTE SUPERBLOQUE</FONT></TD>
+    </TR>
+    <TR>
+        <TD BGCOLOR="#f2f2f2">Nombre</TD>
+        <TD BGCOLOR="#f2f2f2">` + diskName + `</TD>
+    </TR>`
+
+	// Actualizar s_umtime a la fecha actual
+	currentTime := time.Now().Format("2006-01-02 15:04")
+	copy(sb.S_umtime[:], currentTime)
+
+	// Definir los campos en el orden específico mostrado en la imagen
+	rows := []struct {
+		nombre string
+		valor  interface{}
+	}{
+		{"s_inodes_count", sb.S_inodes_count},
+		{"s_blocks_count", sb.S_blocks_count},
+		{"s_free_blocks_count", sb.S_free_blocks_count},
+		{"s_free_inodes_count", sb.S_free_inodes_count},
+		{"s_mtime", string(bytes.Trim(sb.S_mtime[:], "\x00"))},
+		{"s_umtime", string(bytes.Trim(sb.S_umtime[:], "\x00"))},
+		{"s_mnt_count", sb.S_mnt_count},
+		{"s_magic", fmt.Sprintf("0x%X", sb.S_magic)},
+		{"s_inode_size", sb.S_inode_size},
+		{"s_block_size", sb.S_block_size},
+		{"s_first_ino", sb.S_firts_ino},
+		{"s_first_blo", sb.S_first_blo},
+		{"s_bm_inode_start", sb.S_bm_inode_start},
+		{"s_bm_block_start", sb.S_bm_block_start},
+		{"s_inode_start", sb.S_inode_start},
+		{"s_block_start", sb.S_block_start},
+	}
+
+	// Agregar cada fila a la tabla
+	for i, row := range rows {
+		bgColor := "#ffffff"
+		if i%2 == 0 {
+			bgColor = "#f9f9f9"
+		}
+		tableContent += fmt.Sprintf(`
+        <TR BGCOLOR="%s">
+            <TD>%s</TD>
+            <TD>%v</TD>
+        </TR>`, bgColor, row.nombre, row.valor)
+	}
+
+	tableContent += "</TABLE>>"
+
+	// Agregar el nodo con la tabla al grafo
+	dotContent += fmt.Sprintf("  sb [label=%s];\n", tableContent)
+	dotContent += "}\n"
+
+	// Escribir archivo DOT
+	dotPath := path + ".dot"
+	if err := os.WriteFile(dotPath, []byte(dotContent), 0644); err != nil {
+		return Utils.Error("REP", "Error escribiendo archivo DOT: "+err.Error())
+	}
+
+	// Generar imagen PNG usando Graphviz
+	cmd := exec.Command("dot", "-Tpng", dotPath, "-o", path)
+	if err := cmd.Run(); err != nil {
+		return Utils.Error("REP", "Error generando imagen: "+err.Error())
+	}
+
+	// Eliminar archivo DOT temporal
+	os.Remove(dotPath)
+
+	return Utils.Mensaje("REP", "Reporte de SuperBloque generado exitosamente")
 }
 
-func File_Reporte(path string, id string, pathFile string) {
-	// Implementation will go here
+func File_Reporte(path string, id string, pathFile string) string {
+	fmt.Printf("🔧 DEBUG: Generando reporte FILE para archivo '%s'\n", pathFile)
+
+	// Asegurar que el directorio de destino exista
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return Utils.Error("REP", "Error creando directorio para reporte: "+err.Error())
+	}
+
+	// Obtener la partición montada
+	diskPath, found := GetDiskPathFromID(id)
+	if !found {
+		return Utils.Error("REP", "No se encontró el disco para la ID: "+id)
+	}
+
+	// Abrir el archivo del disco
+	file, err := os.Open(diskPath)
+	if err != nil {
+		return Utils.Error("REP", "Error al abrir el disco: "+err.Error())
+	}
+	defer file.Close()
+
+	// Obtener la partición montada
+	particion := GetMount("REP", id, &diskPath)
+	if particion == nil {
+		return Utils.Error("REP", "No se encontró la partición montada")
+	}
+
+	// Leer el superbloque
+	var sb Structs.SuperBloque
+	file.Seek(particion.Part_start, 0)
+	if err := binary.Read(file, binary.LittleEndian, &sb); err != nil {
+		return Utils.Error("REP", "Error al leer el superbloque: "+err.Error())
+	}
+
+	// Normalizar la ruta del archivo
+	pathFile = strings.TrimSpace(pathFile)
+	if !strings.HasPrefix(pathFile, "/") {
+		return Utils.Error("REP", "La ruta del archivo debe ser absoluta")
+	}
+
+	// Separar componentes de la ruta
+	components := strings.Split(pathFile, "/")
+	components = components[1:] // Eliminar elemento vacío inicial
+
+	// Comenzar búsqueda desde el inodo raíz (inodo 0)
+	currentInodeIndex := int64(0)
+	var currentInode Structs.Inodos
+
+	// Para cada componente de la ruta
+	for i, component := range components {
+		if component == "" {
+			continue
+		}
+
+		// Leer el inodo actual
+		file.Seek(sb.S_inode_start+currentInodeIndex*int64(unsafe.Sizeof(Structs.Inodos{})), 0)
+		if err := binary.Read(file, binary.LittleEndian, &currentInode); err != nil {
+			return Utils.Error("REP", "Error leyendo inodo: "+err.Error())
+		}
+
+		// Si no es el último componente, debe ser un directorio
+		if i < len(components)-1 && currentInode.I_type != 0 {
+			return Utils.Error("REP", "Un componente de la ruta no es un directorio")
+		}
+
+		found := false
+		// Buscar el componente en los bloques del inodo actual
+		for b := 0; b < 12 && !found && currentInode.I_block[b] != -1; b++ {
+			var bloqueCarpeta Structs.BloquesCarpetas
+			file.Seek(sb.S_block_start+currentInode.I_block[b]*int64(unsafe.Sizeof(Structs.BloquesCarpetas{})), 0)
+			if err := binary.Read(file, binary.LittleEndian, &bloqueCarpeta); err != nil {
+				continue
+			}
+
+			// Buscar en las entradas del bloque
+			for _, content := range bloqueCarpeta.B_content {
+				nombre := strings.Trim(string(content.B_name[:]), "\x00")
+				if nombre == component && content.B_inodo != -1 {
+					currentInodeIndex = content.B_inodo
+					found = true
+					break
+				}
+			}
+		}
+
+		if !found {
+			return Utils.Error("REP", "No se encontró el archivo o directorio: "+component)
+		}
+	}
+
+	// Leer el inodo del archivo encontrado
+	file.Seek(sb.S_inode_start+currentInodeIndex*int64(unsafe.Sizeof(Structs.Inodos{})), 0)
+	if err := binary.Read(file, binary.LittleEndian, &currentInode); err != nil {
+		return Utils.Error("REP", "Error leyendo inodo del archivo: "+err.Error())
+	}
+
+	// Verificar que es un archivo
+	if currentInode.I_type != 1 {
+		return Utils.Error("REP", "La ruta no corresponde a un archivo")
+	}
+
+	// Obtener el contenido del archivo
+	contenido := obtenerContenidoArchivo(file, sb, currentInode)
+
+	// Verificar si se obtuvo contenido
+	if contenido == "" {
+		fmt.Printf("⚠️ WARNING: El archivo parece estar vacío\n")
+	}
+
+	// Crear contenido DOT para Graphviz
+	dotContent := "digraph G {\n"
+	dotContent += "  node [shape=plaintext];\n"
+	dotContent += "  rankdir=TB;\n\n"
+
+	// Crear tabla HTML para mostrar el contenido
+	tableContent := `<<TABLE BORDER="1" CELLBORDER="1" CELLSPACING="0" CELLPADDING="4">
+    <TR>
+        <TD COLSPAN="2" BGCOLOR="#4CAF50"><FONT COLOR="white">REPORTE FILE</FONT></TD>
+    </TR>
+    <TR>
+        <TD BGCOLOR="#f2f2f2">NOMBRE</TD>
+        <TD>` + components[len(components)-1] + `</TD>
+    </TR>
+    <TR>
+        <TD BGCOLOR="#f2f2f2">CONTENIDO</TD>
+        <TD><FONT FACE="Courier">` + contenido + `</FONT></TD>
+    </TR>
+    </TABLE>>`
+
+	// Agregar el nodo con la tabla al grafo
+	dotContent += fmt.Sprintf("  reporte [label=%s];\n", tableContent)
+	dotContent += "}\n"
+
+	// Escribir archivo DOT
+	dotPath := path + ".dot"
+	if err := os.WriteFile(dotPath, []byte(dotContent), 0644); err != nil {
+		return Utils.Error("REP", "Error escribiendo archivo DOT: "+err.Error())
+	}
+
+	// Generar imagen PNG usando Graphviz con mejor manejo de errores
+	cmd := exec.Command("dot", "-Tpng", dotPath, "-o", path)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		fmt.Printf("❌ Error al ejecutar Graphviz: %s\n", string(output))
+		return Utils.Error("REP", "Error generando imagen: "+err.Error())
+	}
+
+	// Verificar que la imagen se generó correctamente
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		return Utils.Error("REP", "El archivo de imagen no se generó correctamente")
+	}
+
+	// Eliminar archivo DOT temporal
+	os.Remove(dotPath)
+
+	fmt.Printf("✅ Reporte generado exitosamente en: %s\n", path)
+	return Utils.Mensaje("REP", "Reporte FILE generado exitosamente")
+}
+
+// Función auxiliar mejorada para obtener el contenido del archivo
+func obtenerContenidoArchivo(file *os.File, sb Structs.SuperBloque, inodo Structs.Inodos) string {
+	var contenido strings.Builder
+
+	// Leer el contenido de cada bloque directo
+	for i := 0; i < 12 && inodo.I_block[i] != -1; i++ {
+		var bloqueArchivo Structs.BloquesArchivos
+		file.Seek(sb.S_block_start+inodo.I_block[i]*int64(unsafe.Sizeof(Structs.BloquesArchivos{})), 0)
+		if err := binary.Read(file, binary.LittleEndian, &bloqueArchivo); err != nil {
+			fmt.Printf("⚠️ Warning: Error leyendo bloque %d: %s\n", i, err)
+			continue
+		}
+
+		// Agregar el contenido del bloque, eliminando bytes nulos
+		contenido.Write(bytes.TrimRight(bloqueArchivo.B_content[:], "\x00"))
+	}
+
+	// Escapar caracteres especiales para DOT
+	resultado := strings.ReplaceAll(contenido.String(), "&", "&amp;")
+	resultado = strings.ReplaceAll(resultado, "<", "&lt;")
+	resultado = strings.ReplaceAll(resultado, ">", "&gt;")
+	resultado = strings.ReplaceAll(resultado, "\"", "&quot;")
+	resultado = strings.ReplaceAll(resultado, "\n", "<BR/>")
+
+	// Si no hay contenido, mostrar un mensaje indicativo
+	if resultado == "" {
+		resultado = "(archivo vacío)"
+	}
+
+	return resultado
 }
 
 func LS_Reporte(path string, id string, pathDir string) {
