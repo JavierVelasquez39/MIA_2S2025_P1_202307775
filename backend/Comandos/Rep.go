@@ -1174,7 +1174,7 @@ func Report_Block(path string, id string) string {
 	}
 
 	// Abrir el archivo del disco
-	file, err := os.OpenFile(diskPath, os.O_RDWR, 0644)
+	file, err := os.OpenFile(diskPath, os.O_RDONLY, 0644)
 	if err != nil {
 		return Utils.Error("REP", "Error abriendo disco: "+err.Error())
 	}
@@ -1193,183 +1193,524 @@ func Report_Block(path string, id string) string {
 		return Utils.Error("REP", "Error leyendo superbloque: "+err.Error())
 	}
 
-	// Crear el grafo
-	dotContent := "digraph G {\n"
-	dotContent += "  rankdir=LR;\n"
-	dotContent += "  node [shape=record];\n"
-	dotContent += "  bgcolor=\"#FFFFFF\";\n\n"
+	fmt.Printf("🔧 DEBUG: Generando reporte de bloques para la partición en: %s\n", diskPath)
 
-	// Obtener inodos en uso
-	bitmap := make([]byte, sb.S_inodes_count)
-	file.Seek(sb.S_bm_inode_start, 0)
-	if _, err := file.Read(bitmap); err != nil {
-		return Utils.Error("REP", "Error leyendo bitmap de inodos: "+err.Error())
-	}
+	// Crear contenido DOT
+	var dot strings.Builder
+	dot.WriteString("digraph G {\n")
+	dot.WriteString("  graph [rankdir=LR, splines=ortho, nodesep=0.8];\n") // Disposición horizontal (left-right)
+	dot.WriteString("  node [shape=record];\n")
+	dot.WriteString("  bgcolor=\"#FFFFFF\";\n\n")
 
-	// Coleccionar los inodos en uso
-	var inodosEnUso []int64
+	// Mapas para rastrear bloques
+	bloquesCarpeta := make(map[int64]Structs.BloquesCarpetas)
+	bloquesArchivo := make(map[int64][]byte)
+	bloquesApuntadores := make(map[int64]Structs.BloquesApuntadores)
+
+	// Mapa para rastrear conexiones
+	conexiones := make(map[string]bool) // Usar mapa para evitar duplicados
+
+	// Procesar inodos para encontrar bloques
+	fmt.Printf("🔍 Procesando inodos para identificar bloques...\n")
 	for i := int64(0); i < sb.S_inodes_count; i++ {
-		if i < int64(len(bitmap)) && bitmap[i] == '1' {
-			inodosEnUso = append(inodosEnUso, i)
-		}
-	}
-
-	// Mapa para rastrear conexiones padre-hijo y bloques vistos
-	conexiones := make(map[int64][]int64)
-	bloquesVistos := make(map[int64]bool)
-
-	// Procesar cada inodo en uso
-	for _, inodoIdx := range inodosEnUso {
 		var inodo Structs.Inodos
-		file.Seek(sb.S_inode_start+inodoIdx*int64(unsafe.Sizeof(Structs.Inodos{})), 0)
+		file.Seek(sb.S_inode_start+i*int64(unsafe.Sizeof(Structs.Inodos{})), 0)
 		if err := binary.Read(file, binary.LittleEndian, &inodo); err != nil {
 			continue
 		}
 
-		// Procesar bloques directos (0-11)
-		for i := 0; i < 12; i++ {
-			if inodo.I_block[i] == -1 {
+		// Verificar si el inodo está en uso
+		if inodo.I_size == -1 {
+			continue
+		}
+
+		fmt.Printf("  📁 Inodo %d encontrado (tipo: %d)\n", i, inodo.I_type)
+
+		// Determinar si es directorio o archivo
+		esCarpeta := inodo.I_type == 0
+
+		// Leer bloques directos (0-11)
+		for j := 0; j < 12; j++ {
+			if inodo.I_block[j] == -1 {
 				continue
 			}
 
-			bloqueIdx := inodo.I_block[i]
-			if bloquesVistos[bloqueIdx] {
-				continue
-			}
-			bloquesVistos[bloqueIdx] = true
+			fmt.Printf("    💾 Bloque directo[%d] = %d\n", j, inodo.I_block[j])
 
-			if inodo.I_type == 0 { // Directorio
+			// Leer el bloque según su tipo
+			if esCarpeta {
 				var bloqueCarpeta Structs.BloquesCarpetas
-				file.Seek(sb.S_block_start+bloqueIdx*int64(unsafe.Sizeof(Structs.BloquesCarpetas{})), 0)
+				file.Seek(sb.S_block_start+inodo.I_block[j]*int64(unsafe.Sizeof(Structs.BloquesCarpetas{})), 0)
 				if err := binary.Read(file, binary.LittleEndian, &bloqueCarpeta); err != nil {
 					continue
 				}
-
-				// Crear nodo carpeta
-				dotContent += fmt.Sprintf("  bloque_%d [label=\"{Bloque Carpeta %d|{", bloqueIdx, bloqueIdx)
-				first := true
-				for _, entry := range bloqueCarpeta.B_content {
-					if entry.B_inodo != -1 {
-						name := strings.Trim(string(entry.B_name[:]), "\x00")
-						if name != "" && name != "." && name != ".." {
-							if !first {
-								dotContent += "|"
-							}
-							dotContent += fmt.Sprintf("%s (%d)", name, entry.B_inodo)
-							first = false
-
-							// Registrar conexión padre-hijo
-							conexiones[bloqueIdx] = append(conexiones[bloqueIdx], entry.B_inodo)
-						}
-					}
-				}
-				dotContent += "}}\"];\n"
-
-			} else { // Archivo
-				// Usar lector unificado para la ranura del bloque
-				data, err := readFileBlock(file, sb, bloqueIdx)
-				posBloque := fileBlockOffset(sb, bloqueIdx)
-				if err != nil {
-					fmt.Printf("⚠️ Warning: Error leyendo bloque %d: %v\n", bloqueIdx, err)
+				bloquesCarpeta[inodo.I_block[j]] = bloqueCarpeta
+			} else {
+				// Leer bloque de archivo
+				var bloqueArchivo Structs.BloquesArchivos
+				file.Seek(sb.S_block_start+inodo.I_block[j]*int64(unsafe.Sizeof(Structs.BloquesCarpetas{})), 0)
+				if err := binary.Read(file, binary.LittleEndian, &bloqueArchivo); err != nil {
 					continue
 				}
-
-				contenido := string(data)
-
-				// Si está vacío, mostrar indicador
-				if strings.TrimSpace(contenido) == "" {
-					contenido = "(vacío)"
-				}
-
-				// Truncar si es muy largo
-				if len(contenido) > 20 {
-					contentPreview := strings.ReplaceAll(contenido[:17], "\n", "\\n")
-					contenido = contentPreview + "..."
-				} else {
-					contenido = strings.ReplaceAll(contenido, "\n", "\\n")
-				}
-
-				// Escapar comillas y otros caracteres especiales
-				contenido = strings.ReplaceAll(contenido, "\"", "\\\"")
-
-				fmt.Printf("🔧 DEBUG: Leyendo bloque archivo %d en posición %d\n", bloqueIdx, posBloque)
-				fmt.Printf("🔧 DEBUG: Contenido leído: %q\n", contenido)
-
-				dotContent += fmt.Sprintf("  bloque_%d [label=\"{Bloque Archivo %d|%s}\"];\n",
-					bloqueIdx, bloqueIdx, contenido)
+				// Extraer solo los bytes de contenido del bloque
+				bloquesArchivo[inodo.I_block[j]] = bloqueArchivo.B_content[:]
 			}
 		}
 
-		// Procesar bloque de apuntadores simple (12)
-		if inodo.I_block[12] != -1 && !bloquesVistos[inodo.I_block[12]] {
-			procesarBloqueApuntador(file, sb, inodo.I_block[12], &dotContent, bloquesVistos)
+		// Leer bloque de apuntadores simple (índice 12)
+		if inodo.I_block[12] != -1 {
+			fmt.Printf("    📌 Bloque apuntador simple: %d\n", inodo.I_block[12])
+			leerBloqueApuntador(file, sb, inodo.I_block[12], 1, esCarpeta,
+				bloquesCarpeta, bloquesArchivo, bloquesApuntadores, conexiones)
 		}
 
-		// Procesar bloque de apuntadores doble (13)
-		if inodo.I_block[13] != -1 && !bloquesVistos[inodo.I_block[13]] {
-			var bloqueAp Structs.BloquesApuntadores
-			// Los bloques de apuntadores están también indexados por ranuras; calcular posición base
-			file.Seek(sb.S_block_start+(inodo.I_block[13]*int64(unsafe.Sizeof(Structs.BloquesCarpetas{}))), 0)
-			if err := binary.Read(file, binary.LittleEndian, &bloqueAp); err != nil {
-				continue
+		// Leer bloque de apuntadores doble (índice 13)
+		if inodo.I_block[13] != -1 {
+			fmt.Printf("    📌 Bloque apuntador doble: %d\n", inodo.I_block[13])
+			leerBloqueApuntador(file, sb, inodo.I_block[13], 2, esCarpeta,
+				bloquesCarpeta, bloquesArchivo, bloquesApuntadores, conexiones)
+		}
+
+		// Leer bloque de apuntadores triple (índice 14)
+		if inodo.I_block[14] != -1 {
+			fmt.Printf("    📌 Bloque apuntador triple: %d\n", inodo.I_block[14])
+			leerBloqueApuntador(file, sb, inodo.I_block[14], 3, esCarpeta,
+				bloquesCarpeta, bloquesArchivo, bloquesApuntadores, conexiones)
+		}
+	}
+
+	// Agregar nodos de bloques de carpetas
+	if len(bloquesCarpeta) > 0 {
+		dot.WriteString("  subgraph cluster_carpetas {\n")
+		dot.WriteString("    label=\"Bloques de Carpetas\";\n")
+		dot.WriteString("    bgcolor=\"#E3F2FD\";\n")
+
+		for idx, bloque := range bloquesCarpeta {
+			dot.WriteString(fmt.Sprintf("    bc_%d [shape=record, style=filled, fillcolor=\"#90CAF9\", label=\"{Bloque %d|{", idx, idx))
+
+			// Mostrar contenido del bloque de carpeta
+			entradas := []string{}
+			for _, entrada := range bloque.B_content {
+				if entrada.B_inodo != -1 {
+					nombre := strings.Trim(string(entrada.B_name[:]), "\x00")
+					entradas = append(entradas, fmt.Sprintf("%s:%d", nombre, entrada.B_inodo))
+				}
 			}
 
-			dotContent += fmt.Sprintf("  bloque_%d [label=\"{Bloque Apuntadores Doble %d|{",
-				inodo.I_block[13], inodo.I_block[13])
-			first := true
-			for _, ptr := range bloqueAp.B_pointers {
+			if len(entradas) > 0 {
+				dot.WriteString(strings.Join(entradas, "|"))
+			} else {
+				dot.WriteString("vacío")
+			}
+
+			dot.WriteString("}}\"]; // bloque carpeta\n")
+		}
+		dot.WriteString("  }\n\n")
+	}
+
+	// Agregar nodos de bloques de archivos
+	if len(bloquesArchivo) > 0 {
+		dot.WriteString("  subgraph cluster_archivos {\n")
+		dot.WriteString("    label=\"Bloques de Archivos\";\n")
+		dot.WriteString("    bgcolor=\"#E8F5E9\";\n")
+
+		for idx, contenido := range bloquesArchivo {
+			// Preparar vista previa del contenido limpiando bytes nulos y caracteres no imprimibles
+			cleanContent := []byte{}
+			for _, b := range contenido {
+				// Solo incluir caracteres imprimibles y espacios
+				if (b >= 32 && b <= 126) || b == 10 || b == 13 || b == 9 { // ASCII imprimibles + nueva línea + retorno + tab
+					cleanContent = append(cleanContent, b)
+				}
+			}
+
+			preview := string(cleanContent)
+			// Recortar espacios en blanco iniciales y finales
+			preview = strings.TrimSpace(preview)
+
+			// Limitar longitud de la vista previa
+			if len(preview) > 15 {
+				preview = preview[:12] + "..."
+			} else if preview == "" {
+				preview = "(vacío)"
+			}
+
+			// Escapar caracteres especiales para DOT
+			preview = strings.ReplaceAll(preview, "\"", "\\\"")
+			preview = strings.ReplaceAll(preview, "\n", "\\n")
+
+			dot.WriteString(fmt.Sprintf("    ba_%d [shape=record, style=filled, fillcolor=\"#A5D6A7\", label=\"{Bloque %d|%s}\"];\n",
+				idx, idx, preview))
+		}
+		dot.WriteString("  }\n\n")
+	}
+
+	// Agregar nodos de bloques de apuntadores
+	if len(bloquesApuntadores) > 0 {
+		dot.WriteString("  subgraph cluster_apuntadores {\n")
+		dot.WriteString("    label=\"Bloques de Apuntadores\";\n")
+		dot.WriteString("    bgcolor=\"#FFF8E1\";\n")
+
+		for idx, bloque := range bloquesApuntadores {
+			// Determinar tipo de apuntador
+			tipoApuntador := ""
+			if _, ok := conexiones[fmt.Sprintf("ap_%d_nivel_1", idx)]; ok {
+				tipoApuntador = "Simple"
+			} else if _, ok := conexiones[fmt.Sprintf("ap_%d_nivel_2", idx)]; ok {
+				tipoApuntador = "Doble"
+			} else if _, ok := conexiones[fmt.Sprintf("ap_%d_nivel_3", idx)]; ok {
+				tipoApuntador = "Triple"
+			} else {
+				tipoApuntador = "???"
+			}
+
+			dot.WriteString(fmt.Sprintf("    ap_%d [shape=record, style=filled, fillcolor=\"#FFECB3\", label=\"{Bloque Ap. %s %d|{",
+				idx, tipoApuntador, idx))
+
+			// Mostrar punteros válidos
+			punteros := []string{}
+			for _, ptr := range bloque.B_pointers {
 				if ptr != -1 {
-					if !first {
-						dotContent += "|"
-					}
-					dotContent += fmt.Sprintf("%d", ptr)
-					first = false
-					// Procesar el bloque apuntado
-					procesarBloqueApuntador(file, sb, ptr, &dotContent, bloquesVistos)
+					punteros = append(punteros, fmt.Sprintf("%d", ptr))
 				}
 			}
-			dotContent += "}}\"];\n"
-			bloquesVistos[inodo.I_block[13]] = true
-		}
 
-		// Agregar conexiones
-		var prevBlock int64 = -1
-		for _, bloqueIdx := range inodo.I_block {
-			if bloqueIdx == -1 {
-				continue
+			if len(punteros) > 0 {
+				dot.WriteString(strings.Join(punteros, "|"))
+			} else {
+				dot.WriteString("vacío")
 			}
-			if prevBlock != -1 {
-				dotContent += fmt.Sprintf("  bloque_%d -> bloque_%d;\n", prevBlock, bloqueIdx)
-			}
-			prevBlock = bloqueIdx
+
+			dot.WriteString("}}\"]; // bloque apuntador\n")
 		}
+		dot.WriteString("  }\n\n")
 	}
 
-	// Agregar conexiones padre-hijo
-	for padre, hijos := range conexiones {
-		for _, hijo := range hijos {
-			dotContent += fmt.Sprintf("  bloque_%d -> bloque_%d;\n", padre, hijo)
-		}
+	// Agregar todas las conexiones
+	for conexion := range conexiones {
+		dot.WriteString("  " + conexion + " [color=\"#1976D2\"];\n")
 	}
 
-	dotContent += "}\n"
+	// Cerrar el gráfico
+	dot.WriteString("}\n")
 
 	// Escribir archivo DOT
 	dotPath := path + ".dot"
-	if err := os.WriteFile(dotPath, []byte(dotContent), 0644); err != nil {
+	if err := os.WriteFile(dotPath, []byte(dot.String()), 0644); err != nil {
 		return Utils.Error("REP", "Error escribiendo archivo DOT: "+err.Error())
 	}
 
-	// Generar imagen
+	// Generar PNG usando Graphviz
 	cmd := exec.Command("dot", "-Tpng", dotPath, "-o", path)
-	if err := cmd.Run(); err != nil {
-		return Utils.Error("REP", "Error generando imagen: "+err.Error())
+	if output, err := cmd.CombinedOutput(); err != nil {
+		fmt.Println("Error generando imagen:", err)
+		fmt.Println("Output:", string(output))
+		return Utils.Error("REP", "Error generando imagen PNG: "+err.Error())
 	}
 
-	// Eliminar archivo DOT temporal
+	// Eliminar archivo DOT temporal si no hay errores
 	os.Remove(dotPath)
 
-	return Utils.Mensaje("REP", "Reporte de bloques generado exitosamente")
+	return Utils.Mensaje("REP", "Reporte de bloques generado exitosamente en: "+path)
+}
+
+// leerBloqueApuntador lee recursivamente un bloque de apuntadores y registra sus conexiones
+func leerBloqueApuntador(
+	file *os.File,
+	sb Structs.SuperBloque,
+	bloqueIdx int64,
+	nivel int,
+	esCarpeta bool,
+	bloquesCarpeta map[int64]Structs.BloquesCarpetas,
+	bloquesArchivo map[int64][]byte,
+	bloquesApuntadores map[int64]Structs.BloquesApuntadores,
+	conexiones map[string]bool) {
+
+	// Evitar recursión infinita
+	if nivel <= 0 || bloqueIdx < 0 {
+		return
+	}
+
+	// Guardar nivel de este apuntador para identificación posterior
+	conexiones[fmt.Sprintf("ap_%d_nivel_%d", bloqueIdx, nivel)] = true
+
+	// Leer el bloque de apuntadores
+	var bloqueAp Structs.BloquesApuntadores
+	file.Seek(sb.S_block_start+bloqueIdx*int64(unsafe.Sizeof(Structs.BloquesCarpetas{})), 0)
+	if err := binary.Read(file, binary.LittleEndian, &bloqueAp); err != nil {
+		fmt.Printf("⚠️ Error leyendo bloque apuntador %d: %v\n", bloqueIdx, err)
+		return
+	}
+
+	// Registrar el bloque de apuntadores
+	bloquesApuntadores[bloqueIdx] = bloqueAp
+
+	// Procesar cada puntero del bloque
+	for _, ptr := range bloqueAp.B_pointers {
+		if ptr == -1 {
+			continue
+		}
+
+		// Agregar conexión entre este bloque de apuntador y el bloque apuntado
+		if nivel == 1 {
+			// Bloque de apuntador simple apunta a bloques de datos
+			if esCarpeta {
+				// Leer el bloque de carpeta apuntado
+				var bloqueCarpeta Structs.BloquesCarpetas
+				file.Seek(sb.S_block_start+ptr*int64(unsafe.Sizeof(Structs.BloquesCarpetas{})), 0)
+				if err := binary.Read(file, binary.LittleEndian, &bloqueCarpeta); err == nil {
+					bloquesCarpeta[ptr] = bloqueCarpeta
+					// Crear conexión
+					conexiones[fmt.Sprintf("ap_%d -> bc_%d", bloqueIdx, ptr)] = true
+				}
+			} else {
+				// Leer bloque de archivo
+				data := make([]byte, unsafe.Sizeof(Structs.BloquesArchivos{}))
+				file.Seek(sb.S_block_start+ptr*int64(unsafe.Sizeof(Structs.BloquesCarpetas{})), 0)
+				if _, err := file.Read(data); err == nil {
+					bloquesArchivo[ptr] = data
+					// Crear conexión
+					conexiones[fmt.Sprintf("ap_%d -> ba_%d", bloqueIdx, ptr)] = true
+				}
+			}
+		} else {
+			// Bloque apuntador de nivel superior apunta a otro bloque de apuntadores
+			leerBloqueApuntador(file, sb, ptr, nivel-1, esCarpeta,
+				bloquesCarpeta, bloquesArchivo, bloquesApuntadores, conexiones)
+
+			// Crear conexión entre bloques de apuntadores
+			conexiones[fmt.Sprintf("ap_%d -> ap_%d", bloqueIdx, ptr)] = true
+		}
+	}
+}
+
+// procesarBloqueApuntador lee recursivamente un bloque de apuntadores y registra sus conexiones
+func procesarBloqueApuntador(
+	file *os.File,
+	sb Structs.SuperBloque,
+	bloqueIdx int64,
+	nivel int,
+	bloquesCarpeta map[int64]bool,
+	bloquesArchivo map[int64]bool,
+	bloquesApuntadores map[int64]int,
+	conexiones *[]string,
+	esCarpeta bool) {
+
+	// Evitar recursión infinita
+	if nivel <= 0 {
+		return
+	}
+
+	// Leer el bloque de apuntadores
+	var bloque Structs.BloquesApuntadores
+	file.Seek(sb.S_block_start+bloqueIdx*int64(unsafe.Sizeof(Structs.BloquesCarpetas{})), 0)
+	if err := binary.Read(file, binary.LittleEndian, &bloque); err != nil {
+		fmt.Printf("⚠️ Error leyendo bloque apuntador %d: %v\n", bloqueIdx, err)
+		return
+	}
+
+	// Procesar cada puntero del bloque
+	for _, ptr := range bloque.B_pointers {
+		if ptr == -1 {
+			continue
+		}
+
+		// Agregar conexión
+		*conexiones = append(*conexiones, fmt.Sprintf("bloque_%d -> bloque_%d", bloqueIdx, ptr))
+
+		if nivel == 1 {
+			// Bloque apuntador simple apunta a bloques de datos
+			if esCarpeta {
+				bloquesCarpeta[ptr] = true
+			} else {
+				bloquesArchivo[ptr] = true
+			}
+		} else {
+			// Bloque apuntador múltiple apunta a otros bloques de apuntadores
+			bloquesApuntadores[ptr] = nivel - 1
+			procesarBloqueApuntador(file, sb, ptr, nivel-1, bloquesCarpeta, bloquesArchivo, bloquesApuntadores, conexiones, esCarpeta)
+		}
+	}
+}
+
+// contarBloquesDirectosUsados cuenta cuántos bloques directos están utilizados en un inodo
+func contarBloquesDirectosUsados(inodo Structs.Inodos) int {
+	count := 0
+	for i := 0; i < 12; i++ { // Solo bloques directos
+		if inodo.I_block[i] != -1 {
+			count++
+		}
+	}
+	return count
+}
+
+// procesarBloqueContenido procesa un bloque y determina su tipo (carpeta o archivo)
+func procesarBloqueContenido(file *os.File, sb Structs.SuperBloque, bloqueIdx int64, dotContent *string,
+	bloquesVistos map[int64]bool, conexiones map[int64][]int64) {
+
+	// Intentar leer primero como bloque carpeta
+	var bloqueCarpeta Structs.BloquesCarpetas
+	file.Seek(sb.S_block_start+bloqueIdx*int64(unsafe.Sizeof(Structs.BloquesCarpetas{})), 0)
+	if err := binary.Read(file, binary.LittleEndian, &bloqueCarpeta); err != nil {
+		fmt.Printf("⚠️ Warning: Error leyendo bloque %d: %v\n", bloqueIdx, err)
+		return
+	}
+
+	// Verificar si parece un bloque de carpeta válido
+	esDirectorio := false
+	for _, entry := range bloqueCarpeta.B_content {
+		if entry.B_inodo != -1 && strings.Trim(string(entry.B_name[:]), "\x00") != "" {
+			esDirectorio = true
+			break
+		}
+	}
+
+	if esDirectorio {
+		// Es un bloque de directorio
+		*dotContent += fmt.Sprintf("  bloque_%d [label=\"{Bloque Carpeta %d|{", bloqueIdx, bloqueIdx)
+
+		first := true
+		for _, entry := range bloqueCarpeta.B_content {
+			if entry.B_inodo != -1 {
+				name := strings.Trim(string(entry.B_name[:]), "\x00")
+				if name != "" {
+					if !first {
+						*dotContent += "|"
+					}
+					*dotContent += fmt.Sprintf("%s → i:%d", name, entry.B_inodo)
+					first = false
+
+					// Registrar conexión con el inodo
+					conexiones[bloqueIdx] = append(conexiones[bloqueIdx], entry.B_inodo)
+				}
+			}
+		}
+
+		if first { // No se encontraron entradas
+			*dotContent += "(vacío)"
+		}
+
+		*dotContent += "}}\", fillcolor=\"#e1f5fe\"];\n"
+	} else {
+		// Leer como bloque de archivo
+		data, err := readFileBlock(file, sb, bloqueIdx)
+		if err != nil {
+			fmt.Printf("⚠️ Warning: Error leyendo bloque archivo %d: %v\n", bloqueIdx, err)
+			return
+		}
+
+		contenido := string(data)
+		if strings.TrimSpace(contenido) == "" {
+			contenido = "(vacío)"
+		} else if len(contenido) > 20 {
+			contenido = strings.ReplaceAll(contenido[:17], "\n", "\\n") + "..."
+		} else {
+			contenido = strings.ReplaceAll(contenido, "\n", "\\n")
+		}
+
+		contenido = strings.ReplaceAll(contenido, "\"", "\\\"")
+
+		*dotContent += fmt.Sprintf("  bloque_%d [label=\"{Bloque Archivo %d|%s}\", fillcolor=\"#e8f5e9\"];\n",
+			bloqueIdx, bloqueIdx, contenido)
+	}
+
+	bloquesVistos[bloqueIdx] = true
+}
+
+// procesarBloqueApuntadorSimple procesa un bloque de apuntadores simple
+func procesarBloqueApuntadorSimple(file *os.File, sb Structs.SuperBloque, bloqueIdx int64, dotContent *string,
+	bloquesVistos map[int64]bool, conexiones map[int64][]int64) {
+
+	if bloquesVistos[bloqueIdx] {
+		return
+	}
+
+	var bloqueAp Structs.BloquesApuntadores
+	file.Seek(sb.S_block_start+bloqueIdx*int64(unsafe.Sizeof(Structs.BloquesCarpetas{})), 0)
+	if err := binary.Read(file, binary.LittleEndian, &bloqueAp); err != nil {
+		fmt.Printf("⚠️ Warning: Error leyendo bloque apuntadores %d: %v\n", bloqueIdx, err)
+		return
+	}
+
+	*dotContent += fmt.Sprintf("  bloque_%d [label=\"{Bloque Ap. Simple %d|{", bloqueIdx, bloqueIdx)
+
+	punterosValidos := []int64{}
+	for _, ptr := range bloqueAp.B_pointers {
+		if ptr != -1 {
+			punterosValidos = append(punterosValidos, ptr)
+			conexiones[bloqueIdx] = append(conexiones[bloqueIdx], ptr)
+		}
+	}
+
+	for i, ptr := range punterosValidos {
+		if i > 0 {
+			*dotContent += "|"
+		}
+		*dotContent += fmt.Sprintf("%d", ptr)
+	}
+
+	if len(punterosValidos) == 0 {
+		*dotContent += "(vacío)"
+	}
+
+	*dotContent += "}}\", fillcolor=\"#fff8e1\"];\n"
+
+	// Procesar cada bloque apuntado
+	for _, ptr := range punterosValidos {
+		if !bloquesVistos[ptr] {
+			procesarBloqueContenido(file, sb, ptr, dotContent, bloquesVistos, conexiones)
+		}
+	}
+
+	bloquesVistos[bloqueIdx] = true
+}
+
+// procesarBloqueApuntadorDoble procesa un bloque de apuntadores doble
+func procesarBloqueApuntadorDoble(file *os.File, sb Structs.SuperBloque, bloqueIdx int64, dotContent *string,
+	bloquesVistos map[int64]bool, conexiones map[int64][]int64) {
+
+	if bloquesVistos[bloqueIdx] {
+		return
+	}
+
+	var bloqueAp Structs.BloquesApuntadores
+	file.Seek(sb.S_block_start+bloqueIdx*int64(unsafe.Sizeof(Structs.BloquesCarpetas{})), 0)
+	if err := binary.Read(file, binary.LittleEndian, &bloqueAp); err != nil {
+		fmt.Printf("⚠️ Warning: Error leyendo bloque apuntadores doble %d: %v\n", bloqueIdx, err)
+		return
+	}
+
+	*dotContent += fmt.Sprintf("  bloque_%d [label=\"{Bloque Ap. Doble %d|{", bloqueIdx, bloqueIdx)
+
+	punterosValidos := []int64{}
+	for _, ptr := range bloqueAp.B_pointers {
+		if ptr != -1 {
+			punterosValidos = append(punterosValidos, ptr)
+			conexiones[bloqueIdx] = append(conexiones[bloqueIdx], ptr)
+		}
+	}
+
+	for i, ptr := range punterosValidos {
+		if i > 0 {
+			*dotContent += "|"
+		}
+		*dotContent += fmt.Sprintf("%d", ptr)
+	}
+
+	if len(punterosValidos) == 0 {
+		*dotContent += "(vacío)"
+	}
+
+	*dotContent += "}}\", fillcolor=\"#fce4ec\"];\n"
+
+	// Procesar cada bloque de apuntadores simple referenciado
+	for _, ptr := range punterosValidos {
+		if !bloquesVistos[ptr] {
+			procesarBloqueApuntadorSimple(file, sb, ptr, dotContent, bloquesVistos, conexiones)
+		}
+	}
+
+	bloquesVistos[bloqueIdx] = true
 }
 
 // Report_Inode generates a report of inodes and writes a PNG via dot
@@ -1470,33 +1811,51 @@ func Report_Inode(path string, id string) string {
 	return Utils.Mensaje("REP", "Reporte de inodos generado: "+path)
 }
 
-func procesarBloqueApuntador(file *os.File, sb Structs.SuperBloque, bloqueIdx int64, dotContent *string, bloquesVistos map[int64]bool) {
-	var bloqueAp Structs.BloquesApuntadores
-	if _, err := file.Seek(fileBlockOffset(sb, bloqueIdx), 0); err != nil {
-		return
-	}
-	if err := binary.Read(file, binary.LittleEndian, &bloqueAp); err != nil {
+// procesarBloqueApuntadorDetallado lee recursivamente un bloque de apuntadores y registra sus conexiones
+func procesarBloqueApuntadorDetallado(
+	file *os.File,
+	sb Structs.SuperBloque,
+	bloqueIdx int64,
+	nivel int,
+	bloquesCarpeta map[int64]bool,
+	bloquesArchivo map[int64]bool,
+	bloquesApuntadores map[int64]int,
+	conexiones *[]string,
+	esCarpeta bool) {
+
+	// Evitar recursión infinita
+	if nivel <= 0 {
 		return
 	}
 
-	*dotContent += fmt.Sprintf("  bloque_%d [label=\"{Bloque Apuntadores %d|{", bloqueIdx, bloqueIdx)
-	first := true
-	for _, ptr := range bloqueAp.B_pointers {
-		if ptr != -1 {
-			if !first {
-				*dotContent += "|"
-			}
-			*dotContent += fmt.Sprintf("%d", ptr)
-			first = false
+	// Leer el bloque de apuntadores
+	var bloque Structs.BloquesApuntadores
+	file.Seek(sb.S_block_start+bloqueIdx*int64(unsafe.Sizeof(Structs.BloquesCarpetas{})), 0)
+	if err := binary.Read(file, binary.LittleEndian, &bloque); err != nil {
+		fmt.Printf("⚠️ Error leyendo bloque apuntador %d: %v\n", bloqueIdx, err)
+		return
+	}
+
+	// Procesar cada puntero del bloque
+	for _, ptr := range bloque.B_pointers {
+		if ptr == -1 {
+			continue
 		}
-	}
-	*dotContent += "}}\"];\n"
-	bloquesVistos[bloqueIdx] = true
 
-	// Agregar conexiones a los bloques apuntados
-	for _, ptr := range bloqueAp.B_pointers {
-		if ptr != -1 && !bloquesVistos[ptr] {
-			*dotContent += fmt.Sprintf("  bloque_%d -> bloque_%d;\n", bloqueIdx, ptr)
+		// Agregar conexión
+		*conexiones = append(*conexiones, fmt.Sprintf("bloque_%d -> bloque_%d", bloqueIdx, ptr))
+
+		if nivel == 1 {
+			// Bloque apuntador simple apunta a bloques de datos
+			if esCarpeta {
+				bloquesCarpeta[ptr] = true
+			} else {
+				bloquesArchivo[ptr] = true
+			}
+		} else {
+			// Bloque apuntador múltiple apunta a otros bloques de apuntadores
+			bloquesApuntadores[ptr] = nivel - 1
+			procesarBloqueApuntadorDetallado(file, sb, ptr, nivel-1, bloquesCarpeta, bloquesArchivo, bloquesApuntadores, conexiones, esCarpeta)
 		}
 	}
 }
