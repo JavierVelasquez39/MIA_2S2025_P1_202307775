@@ -395,6 +395,13 @@ func crearEstructuraInicial(file *os.File, spr Structs.SuperBloque, particion St
 
 	// Crear bloque del archivo users.txt
 	var bloqueUsers Structs.BloquesArchivos
+
+	// Inicializar el buffer con ceros antes de copiar el contenido
+	for i := range bloqueUsers.B_content {
+		bloqueUsers.B_content[i] = 0
+	}
+
+	// Copiar el contenido asegurando que solo se copie hasta el tamaño del contenido
 	copy(bloqueUsers.B_content[:], inodoUsersData)
 
 	// Escribir bloque del directorio raíz (posición exacta del bloque 0)

@@ -104,8 +104,7 @@ func leerArchivoReal(rutaArchivo string, idParticion string) string {
 	// Preparar tamaños
 	tamInodo := int64(unsafe.Sizeof(Structs.Inodos{}))
 	tamBloqueCarp := int64(unsafe.Sizeof(Structs.BloquesCarpetas{}))
-	tamBloqueArch := int64(unsafe.Sizeof(Structs.BloquesArchivos{}))
-
+	// tamBloqueArch not needed; readers use fileBlockOffset helper
 	// Caso especial: users.txt en la raíz
 	if rutaArchivo == "/users.txt" || rutaArchivo == "users.txt" {
 		fmt.Printf("🔧 DEBUG: Detectado users.txt\n")
@@ -171,21 +170,16 @@ func leerArchivoReal(rutaArchivo string, idParticion string) string {
 						// Leer contenido
 						var content strings.Builder
 						for k := 0; k < 12 && fileInode.I_block[k] != -1; k++ {
-							var fileBlock Structs.BloquesArchivos
-							fileBlockPos := super.S_block_start + (fileInode.I_block[k] * tamBloqueArch)
-
-							file.Seek(fileBlockPos, 0)
-							if err := binary.Read(file, binary.LittleEndian, &fileBlock); err != nil {
+							dataBlock, err := readFileBlock(file, super, fileInode.I_block[k])
+							if err != nil {
 								continue
 							}
 
-							// Leer solo hasta el tamaño real del archivo
 							bytesRestantes := fileInode.I_size - int64(content.Len())
-							if bytesRestantes > 64 {
-								bytesRestantes = 64
+							if bytesRestantes > int64(len(dataBlock)) {
+								bytesRestantes = int64(len(dataBlock))
 							}
-
-							content.Write(fileBlock.B_content[:bytesRestantes])
+							content.Write(dataBlock[:bytesRestantes])
 						}
 
 						return content.String()
@@ -396,23 +390,22 @@ func leerContenidoArchivo(file *os.File, sb Structs.SuperBloque, inodo Structs.I
 	}
 
 	var contenido strings.Builder
-	tamanoBloque := int64(unsafe.Sizeof(Structs.BloquesArchivos{}))
 
 	// Leer bloques directos
-	for i := 0; i < 12 && inodo.I_block[i] != -1; i++ {
-		posicionBloque := sb.S_block_start + (inodo.I_block[i] * tamanoBloque)
+	var bytesLeidos int64
+	for i := 0; i < 12 && inodo.I_block[i] != -1 && bytesLeidos < inodo.I_size; i++ {
+		// Usar la función auxiliar para leer cada bloque
+		bloqueContenido := leerBloqueArchivo(file, sb, inodo.I_block[i])
 
-		var bloque Structs.BloquesArchivos
-		file.Seek(posicionBloque, 0)
-		if err := binary.Read(file, binary.LittleEndian, &bloque); err != nil {
-			continue
-		}
-
-		// Leer solo hasta el tamaño real del archivo
-		for j := 0; j < len(bloque.B_content) && int64(contenido.Len()) < inodo.I_size; j++ {
-			if bloque.B_content[j] != 0 {
-				contenido.WriteByte(bloque.B_content[j])
-			}
+		// Verificar si aún tenemos espacio en el archivo
+		if bytesLeidos+int64(len(bloqueContenido)) > inodo.I_size {
+			// Truncar el contenido para no exceder el tamaño del archivo
+			contenido.WriteString(bloqueContenido[:inodo.I_size-bytesLeidos])
+			bytesLeidos = inodo.I_size
+		} else {
+			// Agregar todo el contenido del bloque
+			contenido.WriteString(bloqueContenido)
+			bytesLeidos += int64(len(bloqueContenido))
 		}
 	}
 
@@ -424,42 +417,35 @@ func procesarBloqueIndirecto(file *os.File, sb Structs.SuperBloque,
 	numeroBloque int64, tamanoArchivo int64, bytesLeidos int64,
 	contenido *strings.Builder) int64 {
 
-	// Leer bloque de apuntadores
+	// Leer bloque de apuntadores usando la ranura canónica
 	var bloqueApuntadores Structs.BloquesApuntadores
-	posicionBloque := sb.S_block_start + (numeroBloque * int64(unsafe.Sizeof(Structs.BloquesCarpetas{})))
-
-	file.Seek(posicionBloque, 0)
+	if _, err := file.Seek(fileBlockOffset(sb, numeroBloque), 0); err != nil {
+		fmt.Printf("❌ CAT: Error posicionando bloque de apuntadores: %v\n", err)
+		return bytesLeidos
+	}
 	if err := binary.Read(file, binary.LittleEndian, &bloqueApuntadores); err != nil {
 		fmt.Printf("❌ CAT: Error leyendo bloque de apuntadores: %v\n", err)
 		return bytesLeidos
 	}
 
-	// Procesar cada apuntador
-	tamanoBloque := int64(unsafe.Sizeof(Structs.BloquesArchivos{}))
 	for _, ptr := range bloqueApuntadores.B_pointers {
 		if ptr == -1 || bytesLeidos >= tamanoArchivo {
 			break
 		}
 
-		// Leer bloque de datos
-		posicionDatos := sb.S_block_start + (ptr * tamanoBloque)
-		file.Seek(posicionDatos, 0)
-
-		var bloqueArchivo Structs.BloquesArchivos
-		if err := binary.Read(file, binary.LittleEndian, &bloqueArchivo); err != nil {
+		data, err := readFileBlock(file, sb, ptr)
+		if err != nil {
 			continue
 		}
 
-		// Procesar contenido
-		for _, b := range bloqueArchivo.B_content {
-			if bytesLeidos >= tamanoArchivo {
-				break
+		if len(data) > 0 {
+			if bytesLeidos+int64(len(data)) > tamanoArchivo {
+				contenido.WriteString(string(data[:tamanoArchivo-bytesLeidos]))
+				bytesLeidos = tamanoArchivo
+			} else {
+				contenido.WriteString(string(data))
+				bytesLeidos += int64(len(data))
 			}
-			if b == 0 {
-				continue
-			}
-			contenido.WriteByte(b)
-			bytesLeidos++
 		}
 	}
 
@@ -491,11 +477,8 @@ func obtenerPrimeraParticionMontada() string {
 }
 
 func leerUsersFile(file *os.File, sb Structs.SuperBloque) string {
-	// Preparar tamaños
-	tamInodo := int64(unsafe.Sizeof(Structs.Inodos{}))
-	tamBloqueArch := int64(64) // Usar tamaño fijo de 64 bytes para bloques
-
 	// Leer inodo de users.txt (inodo 1)
+	tamInodo := int64(unsafe.Sizeof(Structs.Inodos{}))
 	var inodoUsers Structs.Inodos
 	file.Seek(sb.S_inode_start+tamInodo, 0)
 	if err := binary.Read(file, binary.LittleEndian, &inodoUsers); err != nil {
@@ -505,45 +488,57 @@ func leerUsersFile(file *os.File, sb Structs.SuperBloque) string {
 
 	fmt.Printf("🔧 DEBUG: Leyendo users.txt - Tamaño: %d bytes\n", inodoUsers.I_size)
 
-	// Verificar que es un archivo válido
 	if inodoUsers.I_type != 1 || inodoUsers.I_size == 0 {
 		fmt.Printf("❌ Error: users.txt no es un archivo válido\n")
 		return ""
 	}
 
-	// Leer todos los bloques necesarios
 	var contenido strings.Builder
 	bytesRestantes := inodoUsers.I_size
 
 	for i := 0; i < 12 && inodoUsers.I_block[i] != -1 && bytesRestantes > 0; i++ {
-		// Calcular posición exacta del bloque
-		posBloque := sb.S_block_start + (inodoUsers.I_block[i] * tamBloqueArch)
-
-		// Crear buffer del tamaño de bloque
-		bloque := make([]byte, 64)
-
-		// Leer bloque
-		file.Seek(posBloque, 0)
-		n, err := file.Read(bloque)
-		if err != nil || n == 0 {
+		data, err := readFileBlock(file, sb, inodoUsers.I_block[i])
+		if err != nil {
 			fmt.Printf("❌ Error leyendo bloque %d: %v\n", i, err)
 			continue
 		}
 
-		// Determinar cuántos bytes procesar de este bloque
-		bytesAProcesar := int64(64)
-		if bytesRestantes < 64 {
+		bytesAProcesar := int64(len(data))
+		if bytesRestantes < bytesAProcesar {
 			bytesAProcesar = bytesRestantes
 		}
 
-		// Agregar contenido válido al builder
-		contenidoBloque := string(bytes.TrimRight(bloque[:bytesAProcesar], "\x00"))
-		contenido.WriteString(contenidoBloque)
-
-		bytesRestantes -= bytesAProcesar
+		if bytesAProcesar > 0 {
+			contenido.WriteString(string(data[:bytesAProcesar]))
+			bytesRestantes -= bytesAProcesar
+		}
 	}
 
 	resultado := contenido.String()
 	fmt.Printf("🔧 DEBUG: Contenido leído (%d bytes):\n%s\n", len(resultado), resultado)
 	return resultado
+}
+
+// leerBloqueArchivo lee correctamente un bloque de archivo y devuelve su contenido como string
+func leerBloqueArchivo(file *os.File, sb Structs.SuperBloque, bloqueIdx int64) string {
+	if bloqueIdx == -1 {
+		return ""
+	}
+
+	tamBloque := int64(unsafe.Sizeof(Structs.BloquesArchivos{}))
+	posBloque := sb.S_block_start + (bloqueIdx * tamBloque)
+
+	file.Seek(posBloque, 0)
+	var bloqueArchivo Structs.BloquesArchivos
+	if err := binary.Read(file, binary.LittleEndian, &bloqueArchivo); err != nil {
+		fmt.Printf("❌ Error leyendo bloque %d: %v\n", bloqueIdx, err)
+		return ""
+	}
+
+	// Eliminamos bytes nulos y convertimos a string
+	contenidoBytes := bytes.TrimRight(bloqueArchivo.B_content[:], "\x00")
+	contenido := string(contenidoBytes)
+
+	fmt.Printf("🔧 DEBUG: Bloque %d leído, contenido: %q\n", bloqueIdx, contenido)
+	return contenido
 }

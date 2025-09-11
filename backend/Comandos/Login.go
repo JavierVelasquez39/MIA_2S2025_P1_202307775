@@ -159,23 +159,25 @@ func leerContenidoUsersArchivo(file *os.File, super Structs.SuperBloque, inodo S
 
 	// CORRECCIÓN CRÍTICA: Usar el mismo cálculo exacto que en formatearEXT2
 	// El problema está en cómo se calcula la posición del bloque
-	tamanoBloqueCarpetas := int64(unsafe.Sizeof(Structs.BloquesCarpetas{}))
-	bloquePos := super.S_block_start + int64(inodo.I_block[0])*tamanoBloqueCarpetas
+	bloquePos := fileBlockOffset(super, inodo.I_block[0])
 
 	fmt.Printf("🔧 DEBUG: Leyendo bloque %d en posición %d\n", inodo.I_block[0], bloquePos)
 
 	// Posicionar el puntero de archivo
 	file.Seek(bloquePos, 0)
 
-	// Crear un objeto BloquesArchivos y leerlo directamente con binary.Read
-	var bloqueArchivo Structs.BloquesArchivos
-	if err := binary.Read(file, binary.LittleEndian, &bloqueArchivo); err != nil {
+	// Leer la ranura del bloque de manera segura (evita problemas de alineamiento)
+	data, err := readFileBlock(file, super, inodo.I_block[0])
+	if err != nil {
 		fmt.Printf("❌ LOGIN: Error al leer bloque de archivo: %v\n", err)
 		return ""
 	}
 
-	// Extraer el contenido hasta el tamaño del archivo
-	contenido := string(bloqueArchivo.B_content[:tamanoArchivo])
+	// Extraer solo hasta el tamaño real del archivo
+	if int64(len(data)) > tamanoArchivo {
+		data = data[:tamanoArchivo]
+	}
+	contenido := string(data)
 	fmt.Printf("🔧 DEBUG: Contenido completo (%d bytes):\n%s\n", len(contenido), contenido)
 
 	return contenido

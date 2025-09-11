@@ -1,6 +1,7 @@
 package Comandos
 
 import (
+	"bytes"
 	"encoding/binary"
 	"fmt"
 	"os"
@@ -105,9 +106,8 @@ func mkfile(path string, crearPadres bool, size int64, cont string) string {
 		return Utils.Error("MKFILE", "Error al leer superbloque: "+err.Error())
 	}
 
-	// Calcular tamaños
+	// Calcular tamaos
 	tamInodo := int64(unsafe.Sizeof(Structs.Inodos{}))
-	tamBloqueArch := int64(unsafe.Sizeof(Structs.BloquesArchivos{}))
 	tamBloqueCarp := int64(unsafe.Sizeof(Structs.BloquesCarpetas{}))
 
 	// Preparar y validar ruta
@@ -284,9 +284,17 @@ func mkfile(path string, crearPadres bool, size int64, cont string) string {
 		}
 		copy(fileBlock.B_content[:], contentBytes[i:end])
 
-		blockPos := super.S_block_start + (newInode.I_block[blockIndex] * tamBloqueArch)
+		blockPos := fileBlockOffset(super, newInode.I_block[blockIndex])
 		file.Seek(blockPos, 0)
-		if err := binary.Write(file, binary.LittleEndian, &fileBlock); err != nil {
+		// Escribir el BloquesArchivos dentro de una ranura del tamao de BloquesCarpetas
+		slotSize := int64(unsafe.Sizeof(Structs.BloquesCarpetas{}))
+		slotBuf := make([]byte, slotSize)
+		var tempBuf bytes.Buffer
+		if err := binary.Write(&tempBuf, binary.LittleEndian, fileBlock); err != nil {
+			return Utils.Error("MKFILE", "Error preparando bloque de archivo")
+		}
+		copy(slotBuf, tempBuf.Bytes())
+		if _, err := file.Write(slotBuf); err != nil {
 			return Utils.Error("MKFILE", "Error escribiendo bloque de archivo")
 		}
 

@@ -170,7 +170,6 @@ func mkusr(usuario, password, grupo string) string {
 
 	fmt.Printf("🔧 DEBUG: Inodo users.txt leído - Tamaño: %d\n", inodo.I_size)
 
-	// ✅ USAR EXACTAMENTE LA MISMA FUNCIÓN QUE MKGRP (de Login.go)
 	contenidoActual := leerContenidoUsersArchivo(file, super, inodo)
 	if contenidoActual == "" {
 		return Utils.Error("MKUSR", "No se pudo leer el archivo users.txt")

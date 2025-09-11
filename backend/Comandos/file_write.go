@@ -39,8 +39,7 @@ func escribirContenidoArchivo(pathDisco string, particion Structs.Particion, sup
 	}
 	defer file.Close()
 
-	// Tamaños de bloque
-	tamBA := int64(unsafe.Sizeof(Structs.BloquesArchivos{}))
+	// Tamaños de bloque (no se necesita tamBA ahora, usamos readFileBlock para verificación)
 
 	// Asignar bloques únicos para cada fragmento
 	for i := 0; i < 16; i++ {
@@ -83,29 +82,28 @@ func escribirContenidoArchivo(pathDisco string, particion Structs.Particion, sup
 		copy(bloqueArchivo.B_content[:], contenidoBloque)
 
 		// Calcular posición del bloque usando el mismo offset que el lector (desplazamiento de BloquesCarpetas)
-		mitadBA := super.S_block_start + int64(unsafe.Sizeof(Structs.BloquesCarpetas{}))
-		posicionBloque := mitadBA + (int64(inodo.I_block[i]-1) * tamBA)
+		posicionBloque := fileBlockOffset(super, inodo.I_block[i])
 		file.Seek(posicionBloque, 0)
 
-		var bufferBloque bytes.Buffer
-		if err := binary.Write(&bufferBloque, binary.LittleEndian, bloqueArchivo); err != nil {
+		// Escribir el BloquesArchivos dentro de una ranura del tamao de BloquesCarpetas
+		// para mantener compatibilidad con el offset que usan los lectores.
+		slotSize := int64(unsafe.Sizeof(Structs.BloquesCarpetas{}))
+		slotBuf := make([]byte, slotSize)
+		var tempBuf bytes.Buffer
+		if err := binary.Write(&tempBuf, binary.LittleEndian, bloqueArchivo); err != nil {
 			return err
 		}
-		if _, err := file.Write(bufferBloque.Bytes()); err != nil {
+		copy(slotBuf, tempBuf.Bytes())
+		if _, err := file.Write(slotBuf); err != nil {
 			return err
 		}
 
-		// Verificación inmediata: leer de vuelta lo escrito
-		var verificacion Structs.BloquesArchivos
-		file.Seek(posicionBloque, 0)
-		data := make([]byte, tamBA)
-		file.Read(data)
-		buf := bytes.NewBuffer(data)
-		if err := binary.Read(buf, binary.LittleEndian, &verificacion); err != nil {
+		// Verificacion inmediata: leer de vuelta lo escrito usando el lector seguro
+		dataRead, err := readFileBlock(file, super, inodo.I_block[i])
+		if err != nil {
 			return err
 		}
-		// Debug: imprimir los primeros bytes escritos (opcional)
-		fmt.Printf("🔧 DEBUG: Bloque %d escrito en offset %d, muestra: %q\n", inodo.I_block[i], posicionBloque, string(verificacion.B_content[:min(16, len(verificacion.B_content))]))
+		fmt.Printf("DEBUG: Bloque %d escrito en offset %d, muestra: %q\n", inodo.I_block[i], posicionBloque, string(dataRead[:min(16, len(dataRead))]))
 	}
 
 	// Actualizar tamaño del inodo

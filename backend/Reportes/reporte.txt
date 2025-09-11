@@ -1,0 +1,6 @@
+NOMBRE: users.txt
+
+1,G,root
+1,U,root,root,123
+2,G,usuarios
+2,U,usuarios,user1,123
