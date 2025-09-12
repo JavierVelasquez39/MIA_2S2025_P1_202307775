@@ -1005,9 +1005,365 @@ func DISK_R_Simple(path string, id string) {
 	fmt.Println(Utils.Mensaje("REP", "Reporte DISK generado correctamente"))
 	os.Remove(dotPath) // Eliminar archivo DOT temporal
 }
-func ReporteTree(path string, id string) {
-	// Implementation will go here
+
+// ReporteTree genera un reporte gráfico de la estructura jerárquica del sistema de archivos
+func ReporteTree(path string, id string) string {
+	fmt.Println("Generando reporte tree para la partición", id)
+
+	// Obtener la ruta del disco
+	diskPath, found := GetDiskPathFromID(id)
+	if !found {
+		return Utils.Error("REP", "No se encontró el disco para la ID: "+id)
+	}
+
+	// Abrir el archivo del disco
+	file, err := os.Open(diskPath)
+	if err != nil {
+		return Utils.Error("REP", "Error abriendo disco: "+err.Error())
+	}
+	defer file.Close()
+
+	// Obtener la partición montada
+	particion := GetMount("REP", id, &diskPath)
+	if particion == nil {
+		return Utils.Error("REP", "No se encontró la partición montada")
+	}
+
+	// Leer el superbloque
+	var sb Structs.SuperBloque
+	file.Seek(particion.Part_start, 0)
+	if err := binary.Read(file, binary.LittleEndian, &sb); err != nil {
+		return Utils.Error("REP", "Error leyendo superbloque: "+err.Error())
+	}
+
+	// Crear contenido DOT
+	var dot strings.Builder
+	dot.WriteString("digraph G {\n")
+	// Cambiar de TB (top-bottom) a LR (left-right) para disposición horizontal
+	dot.WriteString("  graph [rankdir=LR, nodesep=0.7, ranksep=0.9];\n") // Disposición horizontal (left-right)
+	dot.WriteString("  node [shape=record];\n")
+	dot.WriteString("  bgcolor=\"#FFFFFF\";\n")
+	dot.WriteString("  edge [color=\"#1976D2\"];\n\n")
+
+	// Título del reporte
+	dot.WriteString("  label=\"Reporte Tree - Sistema de Archivos EXT2\";\n")
+	dot.WriteString("  labelloc=\"t\";\n")
+	dot.WriteString("  fontsize=20;\n\n")
+
+	// Título del reporte
+	dot.WriteString("  label=\"Reporte Tree - Sistema de Archivos EXT2\";\n")
+	dot.WriteString("  labelloc=\"t\";\n")
+	dot.WriteString("  fontsize=20;\n\n")
+
+	// Registro de inodos procesados para evitar ciclos
+	procesados := make(map[int64]bool)
+
+	// Mapa de bloques para evitar duplicados
+	bloquesProcesados := make(map[int64]bool)
+
+	// Comenzar desde el inodo raíz (0)
+	dot.WriteString(procesarInodo(file, sb, 0, &procesados, &bloquesProcesados))
+
+	dot.WriteString("}\n")
+
+	// Escribir archivo DOT
+	dotPath := path + ".dot"
+	if err := os.WriteFile(dotPath, []byte(dot.String()), 0644); err != nil {
+		return Utils.Error("REP", "Error escribiendo archivo DOT: "+err.Error())
+	}
+
+	// Generar PNG usando Graphviz
+	cmd := exec.Command("dot", "-Tpng", dotPath, "-o", path)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		fmt.Println("Error generando imagen:", err)
+		fmt.Println("Output:", string(output))
+		return Utils.Error("REP", "Error generando imagen PNG: "+err.Error())
+	}
+
+	// Eliminar archivo DOT temporal si no hay errores
+	os.Remove(dotPath)
+
+	return Utils.Mensaje("REP", "Reporte Tree generado exitosamente en: "+path)
 }
+
+// procesarInodo procesa recursivamente un inodo y sus bloques asociados
+func procesarInodo(file *os.File, sb Structs.SuperBloque, inodeIdx int64, procesados *map[int64]bool, bloquesProcesados *map[int64]bool) string {
+	// Evitar procesar inodos ya procesados
+	if (*procesados)[inodeIdx] {
+		return ""
+	}
+
+	// Marcar inodo como procesado
+	(*procesados)[inodeIdx] = true
+
+	// Leer inodo
+	var inodo Structs.Inodos
+	file.Seek(sb.S_inode_start+inodeIdx*int64(unsafe.Sizeof(Structs.Inodos{})), 0)
+	if err := binary.Read(file, binary.LittleEndian, &inodo); err != nil {
+		fmt.Println("Error leyendo inodo:", err)
+		return ""
+	}
+
+	// Verificar si el inodo está en uso
+	if inodo.I_size == -1 {
+		return "" // Inodo no asignado
+	}
+
+	var result strings.Builder
+
+	// Determinar el tipo de inodo (directorio o archivo)
+	tipoInodo := "Archivo"
+	if inodo.I_type == 0 {
+		tipoInodo = "Directorio"
+	}
+
+	// Crear tabla HTML para inodo con puertos específicos para cada valor numérico
+	result.WriteString(fmt.Sprintf("  inode_%d [label=<<TABLE BORDER=\"0\" CELLBORDER=\"1\" CELLSPACING=\"0\">\n", inodeIdx))
+	result.WriteString(fmt.Sprintf("    <TR><TD BGCOLOR=\"#5D4037\" COLSPAN=\"2\"><FONT COLOR=\"white\">INODO %d - %s</FONT></TD></TR>\n", inodeIdx, tipoInodo))
+	result.WriteString(fmt.Sprintf("    <TR><TD>UID</TD><TD>%d</TD></TR>\n", inodo.I_uid))
+	result.WriteString(fmt.Sprintf("    <TR><TD>GID</TD><TD>%d</TD></TR>\n", inodo.I_gid))
+	result.WriteString(fmt.Sprintf("    <TR><TD>SIZE</TD><TD>%d</TD></TR>\n", inodo.I_size))
+	result.WriteString(fmt.Sprintf("    <TR><TD>TIPO</TD><TD>%d</TD></TR>\n", inodo.I_type))
+	result.WriteString(fmt.Sprintf("    <TR><TD>PERMISOS</TD><TD>%d</TD></TR>\n", inodo.I_perm))
+
+	// Mostrar todos los apuntadores (del 1 al 15) con puertos específicos para cada valor
+	for i := 0; i < 15; i++ {
+		if i < 12 {
+			// Cada valor tiene su propio PORT para que la flecha salga exactamente de allí
+			result.WriteString(fmt.Sprintf("    <TR><TD>BLOCK %d (D)</TD><TD PORT=\"p%d\">%d</TD></TR>\n",
+				i, i, inodo.I_block[i]))
+		} else if i == 12 {
+			result.WriteString(fmt.Sprintf("    <TR><TD>BLOCK %d (I1)</TD><TD PORT=\"p%d\">%d</TD></TR>\n",
+				i, i, inodo.I_block[i]))
+		} else if i == 13 {
+			result.WriteString(fmt.Sprintf("    <TR><TD>BLOCK %d (I2)</TD><TD PORT=\"p%d\">%d</TD></TR>\n",
+				i, i, inodo.I_block[i]))
+		} else {
+			result.WriteString(fmt.Sprintf("    <TR><TD>BLOCK %d (I3)</TD><TD PORT=\"p%d\">%d</TD></TR>\n",
+				i, i, inodo.I_block[i]))
+		}
+	}
+	result.WriteString("  </TABLE>>];\n\n")
+
+	// Procesar bloques directos (0-11)
+	for i := 0; i < 12; i++ {
+		if inodo.I_block[i] != -1 {
+			// Crear conexión desde el puerto específico del valor
+			result.WriteString(fmt.Sprintf("  inode_%d:p%d -> ", inodeIdx, i))
+
+			// Procesar el bloque dependiendo del tipo de inodo
+			if inodo.I_type == 0 { // Directorio
+				contenido := procesarBloqueCarpeta(file, sb, inodo.I_block[i], inodeIdx, i, procesados, bloquesProcesados)
+				result.WriteString(fmt.Sprintf("block_dir_%d;\n", inodo.I_block[i]))
+				result.WriteString(contenido)
+			} else { // Archivo
+				contenido := procesarBloqueArchivo(file, sb, inodo.I_block[i], inodeIdx, i, bloquesProcesados)
+				result.WriteString(fmt.Sprintf("block_file_%d;\n", inodo.I_block[i]))
+				result.WriteString(contenido)
+			}
+		}
+	}
+
+	// Procesar apuntadores indirectos de manera similar...
+	if inodo.I_block[12] != -1 {
+		result.WriteString(fmt.Sprintf("  inode_%d:p12 -> ", inodeIdx))
+		contenido := procesarBloqueApuntadorTree(file, sb, inodo.I_block[12], inodeIdx, 1, inodo.I_type, procesados, bloquesProcesados)
+		result.WriteString(fmt.Sprintf("block_ptr_%d;\n", inodo.I_block[12]))
+		result.WriteString(contenido)
+	}
+
+	if inodo.I_block[13] != -1 {
+		result.WriteString(fmt.Sprintf("  inode_%d:p13 -> ", inodeIdx))
+		contenido := procesarBloqueApuntadorTree(file, sb, inodo.I_block[13], inodeIdx, 2, inodo.I_type, procesados, bloquesProcesados)
+		result.WriteString(fmt.Sprintf("block_ptr_%d;\n", inodo.I_block[13]))
+		result.WriteString(contenido)
+	}
+
+	if inodo.I_block[14] != -1 {
+		result.WriteString(fmt.Sprintf("  inode_%d:p14 -> ", inodeIdx))
+		contenido := procesarBloqueApuntadorTree(file, sb, inodo.I_block[14], inodeIdx, 3, inodo.I_type, procesados, bloquesProcesados)
+		result.WriteString(fmt.Sprintf("block_ptr_%d;\n", inodo.I_block[14]))
+		result.WriteString(contenido)
+	}
+
+	return result.String()
+}
+
+// procesarBloqueCarpeta con conexiones precisas desde cada entrada
+func procesarBloqueCarpeta(file *os.File, sb Structs.SuperBloque, bloqueIdx int64, inodeIdx int64, apuntadorIdx int, procesados *map[int64]bool, bloquesProcesados *map[int64]bool) string {
+	// Evitar procesar bloques ya procesados
+	if (*bloquesProcesados)[bloqueIdx] {
+		return ""
+	}
+
+	// Marcar bloque como procesado
+	(*bloquesProcesados)[bloqueIdx] = true
+
+	// Leer bloque de carpeta - Corregido el nombre de la variable
+	var bloqueCarpetas Structs.BloquesCarpetas // Nombre correcto: BloquesCarpetas (plural)
+	file.Seek(sb.S_block_start+bloqueIdx*int64(unsafe.Sizeof(Structs.BloquesCarpetas{})), 0)
+	if err := binary.Read(file, binary.LittleEndian, &bloqueCarpetas); err != nil {
+		fmt.Println("Error leyendo bloque carpeta:", err)
+		return ""
+	}
+
+	var result strings.Builder
+
+	// Crear tabla HTML con encabezado
+	result.WriteString(fmt.Sprintf("  block_dir_%d [label=<<TABLE BORDER=\"0\" CELLBORDER=\"1\" CELLSPACING=\"0\">\n", bloqueIdx))
+	result.WriteString(fmt.Sprintf("    <TR><TD BGCOLOR=\"#1565C0\" COLSPAN=\"2\"><FONT COLOR=\"white\">BLOQUE CARPETA %d</FONT></TD></TR>\n", bloqueIdx))
+
+	// Mostrar entradas del directorio con puertos específicos en cada número de inodo
+	for i, entrada := range bloqueCarpetas.B_content {
+		if entrada.B_inodo != -1 {
+			nombre := strings.Trim(string(entrada.B_name[:]), "\x00")
+			// El puerto (e{i}) se coloca específicamente en el valor numérico
+			result.WriteString(fmt.Sprintf("    <TR><TD>%s</TD><TD PORT=\"e%d\">%d</TD></TR>\n",
+				nombre, i, entrada.B_inodo))
+		} else {
+			result.WriteString(fmt.Sprintf("    <TR><TD>-</TD><TD>-1</TD></TR>\n"))
+		}
+	}
+	result.WriteString("  </TABLE>>];\n\n")
+
+	// Procesar las entradas del directorio y conectar desde el puerto específico
+	for i, entrada := range bloqueCarpetas.B_content {
+		if entrada.B_inodo != -1 {
+			// Evitar ciclos (no procesar . y ..)
+			nombre := strings.Trim(string(entrada.B_name[:]), "\x00")
+			if nombre != "." && nombre != ".." {
+				// La flecha sale exactamente desde el puerto e{i} (el valor numérico)
+				result.WriteString(fmt.Sprintf("  block_dir_%d:e%d -> inode_%d;\n",
+					bloqueIdx, i, entrada.B_inodo))
+
+				// Procesar inodo recursivamente
+				if !(*procesados)[entrada.B_inodo] {
+					result.WriteString(procesarInodo(file, sb, entrada.B_inodo, procesados, bloquesProcesados))
+				}
+			}
+		}
+	}
+
+	return result.String()
+}
+
+// procesarBloqueArchivo mejorado con puertos específicos
+func procesarBloqueArchivo(file *os.File, sb Structs.SuperBloque, bloqueIdx int64, inodeIdx int64, apuntadorIdx int, bloquesProcesados *map[int64]bool) string {
+	// Evitar procesar bloques ya procesados
+	if (*bloquesProcesados)[bloqueIdx] {
+		return ""
+	}
+
+	// Marcar bloque como procesado
+	(*bloquesProcesados)[bloqueIdx] = true
+
+	// Leer bloque de archivo - Corregido el nombre de la variable
+	var bloquesArchivos Structs.BloquesArchivos // Nombre correcto: BloquesArchivos (plural)
+	file.Seek(sb.S_block_start+bloqueIdx*int64(unsafe.Sizeof(Structs.BloquesCarpetas{})), 0)
+	if err := binary.Read(file, binary.LittleEndian, &bloquesArchivos); err != nil {
+		fmt.Println("Error leyendo bloque archivo:", err)
+		return ""
+	}
+
+	var result strings.Builder
+
+	// Obtener vista previa del contenido
+	contenido := string(bytes.Trim(bloquesArchivos.B_content[:], "\x00"))
+	if len(contenido) > 15 {
+		contenido = contenido[:12] + "..."
+	}
+
+	// Escapar caracteres especiales para DOT
+	contenido = strings.ReplaceAll(contenido, "\"", "\\\"")
+	contenido = strings.ReplaceAll(contenido, "\n", "\\n")
+
+	// Crear nodo para bloque de archivo con un puerto específico para el título
+	result.WriteString(fmt.Sprintf("  block_file_%d [label=<<TABLE BORDER=\"0\" CELLBORDER=\"1\" CELLSPACING=\"0\">\n", bloqueIdx))
+	result.WriteString(fmt.Sprintf("    <TR><TD BGCOLOR=\"#2E7D32\" PORT=\"title\" COLSPAN=\"2\"><FONT COLOR=\"white\">BLOQUE ARCHIVO %d</FONT></TD></TR>\n", bloqueIdx))
+	result.WriteString(fmt.Sprintf("    <TR><TD>%s</TD></TR>\n", contenido))
+	result.WriteString("  </TABLE>>];\n\n")
+
+	return result.String()
+}
+
+// procesarBloqueApuntadorTree con conexiones precisas desde cada puntero
+func procesarBloqueApuntadorTree(file *os.File, sb Structs.SuperBloque, bloqueIdx int64, inodeIdx int64, nivel int, tipoInodo int64, procesados *map[int64]bool, bloquesProcesados *map[int64]bool) string {
+	// Evitar procesar bloques ya procesados
+	if (*bloquesProcesados)[bloqueIdx] {
+		return ""
+	}
+
+	// Marcar bloque como procesado
+	(*bloquesProcesados)[bloqueIdx] = true
+
+	// Leer bloque de apuntadores
+	var bloqueApuntadores Structs.BloquesApuntadores // Correcto: BloquesApuntadores (plural)
+	file.Seek(sb.S_block_start+bloqueIdx*int64(unsafe.Sizeof(Structs.BloquesCarpetas{})), 0)
+	if err := binary.Read(file, binary.LittleEndian, &bloqueApuntadores); err != nil {
+		fmt.Println("Error leyendo bloque apuntador:", err)
+		return ""
+	}
+
+	var result strings.Builder
+
+	// Determinar tipo de apuntador
+	var tipoStr string
+	var color string
+	switch nivel {
+	case 1:
+		tipoStr = "SIMPLE"
+		color = "#FF9800" // Orange
+	case 2:
+		tipoStr = "DOBLE"
+		color = "#F57C00" // Dark Orange
+	case 3:
+		tipoStr = "TRIPLE"
+		color = "#E65100" // Deep Orange
+	}
+
+	// Crear tabla HTML con puertos específicos para cada valor de puntero
+	result.WriteString(fmt.Sprintf("  block_ptr_%d [label=<<TABLE BORDER=\"0\" CELLBORDER=\"1\" CELLSPACING=\"0\">\n", bloqueIdx))
+	result.WriteString(fmt.Sprintf("    <TR><TD BGCOLOR=\"%s\" COLSPAN=\"2\"><FONT COLOR=\"white\">BLOQUE APUNTADOR %s %d</FONT></TD></TR>\n", color, tipoStr, bloqueIdx))
+
+	// Mostrar punteros con PORT específico para cada valor numérico
+	for i, ptr := range bloqueApuntadores.B_pointers {
+		result.WriteString(fmt.Sprintf("    <TR><TD>PTR %d</TD><TD PORT=\"p%d\">%d</TD></TR>\n",
+			i, i, ptr))
+	}
+	result.WriteString("  </TABLE>>];\n\n")
+
+	// Procesar cada apuntador válido con conexiones que salen desde el valor
+	for i, ptr := range bloqueApuntadores.B_pointers {
+		if ptr != -1 {
+			if nivel == 1 {
+				// Es un apuntador simple, apunta a bloques de datos
+				if tipoInodo == 0 { // Directorio
+					// La flecha sale del puerto específico p{i} (el valor numérico)
+					result.WriteString(fmt.Sprintf("  block_ptr_%d:p%d -> ", bloqueIdx, i))
+					contenido := procesarBloqueCarpeta(file, sb, ptr, inodeIdx, i, procesados, bloquesProcesados)
+					result.WriteString(fmt.Sprintf("block_dir_%d;\n", ptr))
+					result.WriteString(contenido)
+				} else { // Archivo
+					// La flecha sale del puerto específico p{i} (el valor numérico)
+					result.WriteString(fmt.Sprintf("  block_ptr_%d:p%d -> ", bloqueIdx, i))
+					contenido := procesarBloqueArchivo(file, sb, ptr, inodeIdx, i, bloquesProcesados)
+					result.WriteString(fmt.Sprintf("block_file_%d;\n", ptr))
+					result.WriteString(contenido)
+				}
+			} else {
+				// Es un apuntador de nivel superior (doble o triple)
+				// La flecha sale del puerto específico p{i} (el valor numérico)
+				result.WriteString(fmt.Sprintf("  block_ptr_%d:p%d -> ", bloqueIdx, i))
+				contenido := procesarBloqueApuntadorTree(file, sb, ptr, inodeIdx, nivel-1, tipoInodo, procesados, bloquesProcesados)
+				result.WriteString(fmt.Sprintf("block_ptr_%d;\n", ptr))
+				result.WriteString(contenido)
+			}
+		}
+	}
+
+	return result.String()
+}
+
 func BitMap_inodo(path string, id string) string {
 	// Obtener la ruta del disco
 	diskPath, found := GetDiskPathFromID(id)
