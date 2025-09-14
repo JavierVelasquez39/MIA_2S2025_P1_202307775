@@ -2055,7 +2055,6 @@ func procesarBloqueApuntadorDoble(file *os.File, sb Structs.SuperBloque, bloqueI
 	bloquesVistos[bloqueIdx] = true
 }
 
-// Report_Inode generates a report of inodes and writes a PNG via dot
 func Report_Inode(path string, id string) string {
 	// Find disk path
 	diskPath, found := GetDiskPathFromID(id)
@@ -2087,13 +2086,22 @@ func Report_Inode(path string, id string) string {
 		return Utils.Error("REP", "Error leyendo bitmap de inodos: "+err.Error())
 	}
 
+	// Debug: log bitmap info
+	fmt.Printf("🔍 DEBUG: Procesando bitmap de inodos (%d bytes)\n", len(bitmap))
+	if len(bitmap) > 10 {
+		fmt.Printf("🔍 DEBUG: Primeros 10 bytes del bitmap: %v\n", bitmap[:10])
+	}
+
 	// Build DOT table
 	var b bytes.Buffer
 	b.WriteString("digraph G {\n")
 	b.WriteString("  node [shape=plaintext];\n")
 	b.WriteString("  tbl [label=<\n")
-	b.WriteString("  <table border=1 cellborder=1 cellspacing=0 cellpadding=4>\n")
-	b.WriteString("    <tr><td><b>Index</b></td><td><b>Type</b></td><td><b>Size</b></td><td><b>Blocks</b></td><td><b>ATime</b></td><td><b>CTime</b></td><td><b>MTime</b></td></tr>\n")
+	b.WriteString("  <table border=\"1\" cellborder=\"1\" cellspacing=\"0\" cellpadding=\"4\">\n")
+	b.WriteString("    <tr><td bgcolor=\"#4CAF50\"><font color=\"white\"><b>Index</b></font></td><td bgcolor=\"#4CAF50\"><font color=\"white\"><b>Type</b></font></td><td bgcolor=\"#4CAF50\"><font color=\"white\"><b>Size</b></font></td><td bgcolor=\"#4CAF50\"><font color=\"white\"><b>Blocks</b></font></td><td bgcolor=\"#4CAF50\"><font color=\"white\"><b>ATime</b></font></td><td bgcolor=\"#4CAF50\"><font color=\"white\"><b>CTime</b></font></td><td bgcolor=\"#4CAF50\"><font color=\"white\"><b>MTime</b></font></td></tr>\n")
+
+	// Contador para verificar si encontramos inodos
+	inodosEncontrados := 0
 
 	for i := int64(0); i < sb.S_inodes_count; i++ {
 		var inode Structs.Inodos
@@ -2103,10 +2111,29 @@ func Report_Inode(path string, id string) string {
 			continue
 		}
 
-		// Only show allocated inodes
-		if i < int64(len(bitmap)) && bitmap[i] != '1' {
+		// CAMBIO IMPORTANTE: Verificar si el inodo está en uso de varias maneras
+		inodoActivo := false
+
+		// 1. Verificar bitmap (aceptar tanto '1' como 1)
+		if i < int64(len(bitmap)) {
+			if bitmap[i] == '1' || bitmap[i] == 1 {
+				inodoActivo = true
+				fmt.Printf("🔍 DEBUG: Inodo %d activo según bitmap (valor: %d)\n", i, bitmap[i])
+			}
+		}
+
+		// 2. También verificar si el inodo parece estar en uso basado en su contenido
+		if inode.I_size > 0 && inode.I_uid >= 0 {
+			inodoActivo = true
+			fmt.Printf("🔍 DEBUG: Inodo %d activo según propiedades (size: %d, uid: %d)\n",
+				i, inode.I_size, inode.I_uid)
+		}
+
+		if !inodoActivo {
 			continue
 		}
+
+		inodosEncontrados++
 
 		t := "DIR"
 		if inode.I_type == 1 {
@@ -2129,6 +2156,14 @@ func Report_Inode(path string, id string) string {
 			i, t, inode.I_size, strings.Join(blocks, ","), aTime, cTime, mTime))
 	}
 
+	// Si no hay inodos, agregar un mensaje
+	if inodosEncontrados == 0 {
+		b.WriteString("    <tr><td colspan=\"7\">No se encontraron inodos activos</td></tr>\n")
+		fmt.Println("⚠️ ADVERTENCIA: No se encontraron inodos activos")
+	} else {
+		fmt.Printf("✅ Se encontraron %d inodos activos\n", inodosEncontrados)
+	}
+
 	b.WriteString("  </table>\n")
 	b.WriteString(">];\n")
 	b.WriteString("}\n")
@@ -2141,14 +2176,19 @@ func Report_Inode(path string, id string) string {
 
 	// Run dot to generate PNG
 	cmd := exec.Command("dot", "-Tpng", tmpDot, "-o", path)
-	if err := cmd.Run(); err != nil {
-		// If dot fails, still write the DOT as fallback
-		_ = os.WriteFile(path+".txt", b.Bytes(), 0644)
-		return Utils.Error("REP", "Error ejecutando dot para generar PNG: "+err.Error())
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		// Si falla, guardar la salida de error para diagnóstico
+		os.WriteFile(path+".error.txt", output, 0644)
+		// También guardar el contenido DOT
+		os.WriteFile(path+".dot.txt", b.Bytes(), 0644)
+		fmt.Printf("❌ ERROR: Fallo al ejecutar Graphviz: %v\n", err)
+		fmt.Printf("    Output: %s\n", string(output))
+		return Utils.Error("REP", "Error ejecutando dot: "+err.Error())
 	}
 
 	// Clean up dot file
-	_ = os.Remove(tmpDot)
+	os.Remove(tmpDot)
 
 	return Utils.Mensaje("REP", "Reporte de inodos generado: "+path)
 }

@@ -1,0 +1,10 @@
+digraph G {
+  node [shape=plaintext];
+  tbl [label=<
+  <table border=1 cellborder=1 cellspacing=0 cellpadding=4>
+    <tr><td bgcolor="#4CAF50"><font color="white"><b>Index</b></font></td><td bgcolor="#4CAF50"><font color="white"><b>Type</b></font></td><td bgcolor="#4CAF50"><font color="white"><b>Size</b></font></td><td bgcolor="#4CAF50"><font color="white"><b>Blocks</b></font></td><td bgcolor="#4CAF50"><font color="white"><b>ATime</b></font></td><td bgcolor="#4CAF50"><font color="white"><b>CTime</b></font></td><td bgcolor="#4CAF50"><font color="white"><b>MTime</b></font></td></tr>
+    <tr><td>0</td><td>DIR</td><td>96</td><td>0</td><td>2025-09-14 16:00</td><td>2025-09-14 16:00</td><td>2025-09-14 16:00</td></tr>
+    <tr><td>1</td><td>FILE</td><td>27</td><td>1</td><td>2025-09-14 16:00</td><td>2025-09-14 16:00</td><td>2025-09-14 16:00</td></tr>
+  </table>
+>];
+}
